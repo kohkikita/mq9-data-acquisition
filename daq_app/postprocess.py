@@ -12,8 +12,9 @@ import matplotlib.pyplot as plt
 from .config import (
     RMS_WINDOW_S, EPS, PLOT_DPI,
     SPEC_WIN_S, SPEC_OVERLAP, SPEC_NFFT, SPEC_MAX_HZ, SPEC_CMAP,
-    EVENT_AUDIO_PAD_S, MERGE_GAP_S
+    EVENT_AUDIO_PAD_S, MERGE_GAP_S,
 )
+
 
 def postprocess_event_aligned(force_csv_path: str, wav_path: str, out_csv_path: str, rms_window_s: float = RMS_WINDOW_S) -> None:
     df = pd.read_csv(force_csv_path)
@@ -23,14 +24,13 @@ def postprocess_event_aligned(force_csv_path: str, wav_path: str, out_csv_path: 
     df = df.copy()
     df["pc_elapsed_s"] = pd.to_numeric(df["pc_elapsed_s"], errors="coerce").astype(float)
     df["force_N"] = pd.to_numeric(df["force_N"], errors="coerce").astype(float)
-
     df = df[np.isfinite(df["pc_elapsed_s"].values)]
     if df.empty:
         raise RuntimeError("Force CSV has no valid pc_elapsed_s rows.")
     df = df.sort_values("pc_elapsed_s").drop_duplicates(subset=["pc_elapsed_s"], keep="last")
 
-    t_force_min = float(df["pc_elapsed_s"].min())
-    t_force_max = float(df["pc_elapsed_s"].max())
+    t_min = float(df["pc_elapsed_s"].min())
+    t_max = float(df["pc_elapsed_s"].max())
 
     fs, audio = wavfile.read(wav_path)
     if audio.dtype == np.int16:
@@ -49,16 +49,15 @@ def postprocess_event_aligned(force_csv_path: str, wav_path: str, out_csv_path: 
     if n_windows <= 0:
         raise RuntimeError("Audio too short for chosen RMS window.")
 
-    first_i = None
-    last_i = None
+    first_i = last_i = None
     for i in range(n_windows):
         t_mid = (i * rms_window_s) + 0.5 * rms_window_s
-        if t_force_min <= t_mid <= t_force_max:
+        if t_min <= t_mid <= t_max:
             first_i = i
             break
     for i in range(n_windows - 1, -1, -1):
         t_mid = (i * rms_window_s) + 0.5 * rms_window_s
-        if t_force_min <= t_mid <= t_force_max:
+        if t_min <= t_mid <= t_max:
             last_i = i
             break
     if first_i is None or last_i is None:
@@ -70,9 +69,15 @@ def postprocess_event_aligned(force_csv_path: str, wav_path: str, out_csv_path: 
     force_src = df["force_N"].values
 
     vesc_cols = [
-        "vesc_rpm", "vesc_v_in_V", "vesc_i_motor_A", "vesc_i_in_A",
-        "vesc_duty", "vesc_temp_mos_C", "vesc_temp_motor_C",
+        "vesc_rpm",
+        "vesc_v_in_V",
+        "vesc_i_motor_A",
+        "vesc_i_in_A",
+        "vesc_duty",
+        "vesc_temp_mos_C",
+        "vesc_power_W",
     ]
+
     present_vesc = [c for c in vesc_cols if c in df.columns]
     for c in present_vesc:
         df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
@@ -94,9 +99,11 @@ def postprocess_event_aligned(force_csv_path: str, wav_path: str, out_csv_path: 
         rms_lin = float(np.sqrt(np.mean(seg ** 2)))
         rms_dbfs = float(20 * np.log10(rms_lin + EPS))
 
+        force_N = float(np.interp(t_mid, t_src, force_src))
+
         out = {
             "t_event_s": t_mid - t0_event,
-            "force_N": float(np.interp(t_mid, t_src, force_src)),
+            "force_N": force_N,
             "audio_rms_dbfs": rms_dbfs,
             "audio_rms_linear": rms_lin,
             "window_start_s": t_start - t0_event,
@@ -104,6 +111,7 @@ def postprocess_event_aligned(force_csv_path: str, wav_path: str, out_csv_path: 
         }
         for c in present_vesc:
             out[c] = interp_optional(c, t_mid)
+
         rows.append(out)
 
     df_out = pd.DataFrame(rows)
@@ -126,6 +134,7 @@ def postprocess_event_aligned(force_csv_path: str, wav_path: str, out_csv_path: 
 
     df_out.to_csv(out_csv_path, index=False)
 
+
 def save_force_audio_plot(combined_csv_path: str, out_png_path: str, title: str = "Force vs Audio RMS (Post-Processed)") -> None:
     df = pd.read_csv(combined_csv_path)
     required = {"t_event_s", "force_N", "audio_rms_dbfs"}
@@ -146,6 +155,7 @@ def save_force_audio_plot(combined_csv_path: str, out_png_path: str, title: str 
     ax_audio.set_xlabel("Time (s)")
     ax_audio.set_ylabel("Audio Level (dBFS)", color="tab:orange")
     ax_force.set_ylabel("Force (N)", color="tab:blue")
+
     ax_audio.tick_params(axis="y", colors="tab:orange")
     ax_force.tick_params(axis="y", colors="tab:blue")
     ax_audio.grid(True, which="both", alpha=0.3)
@@ -158,89 +168,193 @@ def save_force_audio_plot(combined_csv_path: str, out_png_path: str, title: str 
     fig.savefig(out_png_path, dpi=PLOT_DPI)
     plt.close(fig)
 
-def compute_audio_spectrogram(wav_path: str, out_csv_path: str, out_png_path: str,
-                             *, win_s: float = SPEC_WIN_S, overlap: float = SPEC_OVERLAP,
-                             nfft: int = SPEC_NFFT, max_hz: float | None = SPEC_MAX_HZ) -> None:
-    if not os.path.exists(wav_path):
-        raise RuntimeError(f"WAV not found: {wav_path}")
 
-    fs, audio = wavfile.read(wav_path)
-    if audio.ndim > 1:
-        audio = audio[:, 0]
-    if np.issubdtype(audio.dtype, np.integer):
-        audio = audio.astype(np.float64) / np.iinfo(audio.dtype).max
+def _add_right_axis(ax_base, offset_axes: float):
+    """
+    Create an additional right-side y-axis and offset it to the right.
+    offset_axes is in axes coordinates: 1.0 is the normal right spine,
+    1.10 moves it further right, etc.
+    """
+    ax = ax_base.twinx()
+    ax.spines["right"].set_position(("axes", offset_axes))
+    ax.set_frame_on(True)
+    ax.patch.set_visible(False)
+    return ax
+
+
+def save_overlay_force_audio_rpm_power_duty(combined_csv_path: str, out_png_path: str) -> None:
+    """
+    Single graph overlay:
+    - Force (left axis)
+    - Audio RMS dBFS (right axis #1)
+    - RPM (right axis #2)
+    - Power W (right axis #3)
+    - Duty (right axis #4)
+    """
+    df = pd.read_csv(combined_csv_path)
+
+    required = {"t_event_s", "force_N", "audio_rms_dbfs"}
+    if not required.issubset(df.columns):
+        raise RuntimeError(f"Combined CSV missing required columns: {sorted(required)}")
+
+    t = df["t_event_s"].astype(float).values
+
+    fig, ax_force = plt.subplots(figsize=(12, 6))
+    ax_audio = ax_force.twinx()
+    ax_rpm = _add_right_axis(ax_force, 1.10)
+    ax_power = _add_right_axis(ax_force, 1.20)
+    ax_duty = _add_right_axis(ax_force, 1.30)
+
+    handles = []
+    labels = []
+
+    # Force
+    p1, = ax_force.plot(t, df["force_N"].astype(float).values, linewidth=1.9, color="tab:blue", label="Force (N)")
+    ax_force.set_ylabel("Force (N)", color="tab:blue")
+    ax_force.tick_params(axis="y", colors="tab:blue")
+    handles.append(p1); labels.append("Force (N)")
+
+    # Audio
+    p2, = ax_audio.plot(t, df["audio_rms_dbfs"].astype(float).values, linewidth=1.6, color="tab:orange", label="Audio (dBFS)")
+    ax_audio.set_ylabel("Audio (dBFS)", color="tab:orange")
+    ax_audio.tick_params(axis="y", colors="tab:orange")
+    handles.append(p2); labels.append("Audio (dBFS)")
+
+    # RPM
+    if "vesc_rpm" in df.columns:
+        p3, = ax_rpm.plot(t, df["vesc_rpm"].astype(float).values, linewidth=1.5, color="tab:purple", label="RPM")
+        ax_rpm.set_ylabel("RPM", color="tab:purple")
+        ax_rpm.tick_params(axis="y", colors="tab:purple")
+        handles.append(p3); labels.append("RPM")
     else:
-        audio = audio.astype(np.float64)
-    audio = audio[np.isfinite(audio)]
-    if audio.size == 0:
-        raise RuntimeError("Audio empty.")
+        ax_rpm.set_visible(False)
 
-    win_len = int(round(win_s * fs))
-    if win_len < 16:
-        raise RuntimeError("SPEC_WIN_S too small (window < 16 samples).")
-    if nfft < win_len:
-        nfft = int(2 ** math.ceil(math.log2(win_len)))
-
-    hop = int(round(win_len * (1.0 - overlap)))
-    hop = max(1, hop)
-    window = np.hanning(win_len)
-
-    n_frames = 1 + (audio.size - win_len) // hop if audio.size >= win_len else 0
-    if n_frames <= 0:
-        raise RuntimeError("Audio too short for chosen spectrogram window.")
-
-    freqs = np.fft.rfftfreq(nfft, d=1.0 / fs)
-    if max_hz is not None:
-        fmask = freqs <= float(max_hz)
+    # Power
+    if "vesc_power_W" in df.columns:
+        p4, = ax_power.plot(t, df["vesc_power_W"].astype(float).values, linewidth=1.5, color="tab:red", label="Power (W)")
+        ax_power.set_ylabel("Power (W)", color="tab:red")
+        ax_power.tick_params(axis="y", colors="tab:red")
+        handles.append(p4); labels.append("Power (W)")
     else:
-        fmask = slice(None)
-    freqs_use = freqs[fmask]
+        ax_power.set_visible(False)
 
-    spec_db = np.empty((freqs_use.size, n_frames), dtype=np.float64)
-    for i in range(n_frames):
-        start = i * hop
-        seg = audio[start:start + win_len]
-        segw = seg * window
-        X = np.fft.rfft(segw, n=nfft)
-        P = (np.abs(X) ** 2)
-        P = P[fmask]
-        spec_db[:, i] = 10.0 * np.log10(np.maximum(P, 1e-20))
+    # Duty
+    if "vesc_duty" in df.columns:
+        p5, = ax_duty.plot(t, df["vesc_duty"].astype(float).values, linewidth=1.5, color="tab:green", label="Duty")
+        ax_duty.set_ylabel("Duty", color="tab:green")
+        ax_duty.tick_params(axis="y", colors="tab:green")
+        handles.append(p5); labels.append("Duty")
+    else:
+        ax_duty.set_visible(False)
 
-    t_s = (np.arange(n_frames) * hop + (win_len / 2.0)) / fs
+    ax_force.set_title("Overlay: Force + Audio + RPM + Power + Duty")
+    ax_force.set_xlabel("Time (s)")
+    ax_force.grid(True, alpha=0.3)
 
-    chunks = []
-    for ti in range(n_frames):
-        chunks.append(pd.DataFrame({
-            "t_s": np.full(freqs_use.size, t_s[ti], dtype=np.float64),
-            "freq_hz": freqs_use.astype(np.float64),
-            "mag_db": spec_db[:, ti].astype(np.float64),
-        }))
-    df = pd.concat(chunks, ignore_index=True)
-    df["t_s"] = df["t_s"].round(4)
-    df["freq_hz"] = df["freq_hz"].round(2)
-    df["mag_db"] = df["mag_db"].round(2)
-    df.to_csv(out_csv_path, index=False)
+    ax_force.legend(handles, labels, loc="best")
 
-    fig, ax = plt.subplots(figsize=(10.5, 5.4))
-    im = ax.imshow(
-        spec_db,
-        origin="lower",
-        aspect="auto",
-        extent=[t_s[0], t_s[-1], freqs_use[0], freqs_use[-1]],
-        cmap=SPEC_CMAP,
-    )
-    ax.set_title("Audio Spectrogram (STFT) - Event Audio Only")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Frequency (Hz)")
-    fig.colorbar(im, ax=ax, label="Magnitude (dB, relative)")
     fig.tight_layout()
     fig.savefig(out_png_path, dpi=PLOT_DPI)
     plt.close(fig)
+
+
+def save_overlay_force_audio_rpm(combined_csv_path: str, out_png_path: str) -> None:
+    """
+    Single graph overlay: Force + Audio + RPM
+    """
+    df = pd.read_csv(combined_csv_path)
+
+    required = {"t_event_s", "force_N", "audio_rms_dbfs"}
+    if not required.issubset(df.columns):
+        raise RuntimeError(f"Combined CSV missing required columns: {sorted(required)}")
+    if "vesc_rpm" not in df.columns:
+        raise RuntimeError("Combined CSV missing vesc_rpm")
+
+    t = df["t_event_s"].astype(float).values
+
+    fig, ax_force = plt.subplots(figsize=(12, 6))
+    ax_audio = ax_force.twinx()
+    ax_rpm = _add_right_axis(ax_force, 1.10)
+
+    handles = []
+    labels = []
+
+    p1, = ax_force.plot(t, df["force_N"].astype(float).values, linewidth=1.9, color="tab:blue", label="Force (N)")
+    ax_force.set_ylabel("Force (N)", color="tab:blue")
+    ax_force.tick_params(axis="y", colors="tab:blue")
+    handles.append(p1); labels.append("Force (N)")
+
+    p2, = ax_audio.plot(t, df["audio_rms_dbfs"].astype(float).values, linewidth=1.6, color="tab:orange", label="Audio (dBFS)")
+    ax_audio.set_ylabel("Audio (dBFS)", color="tab:orange")
+    ax_audio.tick_params(axis="y", colors="tab:orange")
+    handles.append(p2); labels.append("Audio (dBFS)")
+
+    p3, = ax_rpm.plot(t, df["vesc_rpm"].astype(float).values, linewidth=1.5, color="tab:purple", label="RPM")
+    ax_rpm.set_ylabel("RPM", color="tab:purple")
+    ax_rpm.tick_params(axis="y", colors="tab:purple")
+    handles.append(p3); labels.append("RPM")
+
+    ax_force.set_title("Overlay: Force + Audio + RPM")
+    ax_force.set_xlabel("Time (s)")
+    ax_force.grid(True, alpha=0.3)
+    ax_force.legend(handles, labels, loc="best")
+
+    fig.tight_layout()
+    fig.savefig(out_png_path, dpi=PLOT_DPI)
+    plt.close(fig)
+
+
+def save_overlay_force_audio_power(combined_csv_path: str, out_png_path: str) -> None:
+    """
+    Single graph overlay: Force + Audio + Power
+    """
+    df = pd.read_csv(combined_csv_path)
+
+    required = {"t_event_s", "force_N", "audio_rms_dbfs"}
+    if not required.issubset(df.columns):
+        raise RuntimeError(f"Combined CSV missing required columns: {sorted(required)}")
+    if "vesc_power_W" not in df.columns:
+        raise RuntimeError("Combined CSV missing vesc_power_W")
+
+    t = df["t_event_s"].astype(float).values
+
+    fig, ax_force = plt.subplots(figsize=(12, 6))
+    ax_audio = ax_force.twinx()
+    ax_power = _add_right_axis(ax_force, 1.10)
+
+    handles = []
+    labels = []
+
+    p1, = ax_force.plot(t, df["force_N"].astype(float).values, linewidth=1.9, color="tab:blue", label="Force (N)")
+    ax_force.set_ylabel("Force (N)", color="tab:blue")
+    ax_force.tick_params(axis="y", colors="tab:blue")
+    handles.append(p1); labels.append("Force (N)")
+
+    p2, = ax_audio.plot(t, df["audio_rms_dbfs"].astype(float).values, linewidth=1.6, color="tab:orange", label="Audio (dBFS)")
+    ax_audio.set_ylabel("Audio (dBFS)", color="tab:orange")
+    ax_audio.tick_params(axis="y", colors="tab:orange")
+    handles.append(p2); labels.append("Audio (dBFS)")
+
+    p3, = ax_power.plot(t, df["vesc_power_W"].astype(float).values, linewidth=1.5, color="tab:red", label="Power (W)")
+    ax_power.set_ylabel("Power (W)", color="tab:red")
+    ax_power.tick_params(axis="y", colors="tab:red")
+    handles.append(p3); labels.append("Power (W)")
+
+    ax_force.set_title("Overlay: Force + Audio + Power")
+    ax_force.set_xlabel("Time (s)")
+    ax_force.grid(True, alpha=0.3)
+    ax_force.legend(handles, labels, loc="best")
+
+    fig.tight_layout()
+    fig.savefig(out_png_path, dpi=PLOT_DPI)
+    plt.close(fig)
+
 
 def get_event_intervals_from_raw_csv(raw_event_csv: str) -> list[tuple[float, float]]:
     df = pd.read_csv(raw_event_csv)
     if df.empty:
         return []
+
     if "event_id" not in df.columns or "pc_elapsed_s" not in df.columns:
         raise RuntimeError("Raw event CSV missing required columns: event_id, pc_elapsed_s")
 
@@ -258,6 +372,7 @@ def get_event_intervals_from_raw_csv(raw_event_csv: str) -> list[tuple[float, fl
         a = float(s.min()) - EVENT_AUDIO_PAD_S
         b = float(s.max()) + EVENT_AUDIO_PAD_S
         intervals.append((max(0.0, a), max(0.0, b)))
+
     intervals.sort(key=lambda x: x[0])
 
     merged: list[tuple[float, float]] = []
@@ -270,7 +385,9 @@ def get_event_intervals_from_raw_csv(raw_event_csv: str) -> list[tuple[float, fl
             merged[-1] = (pa, max(pb, b))
         else:
             merged.append((a, b))
+
     return merged
+
 
 def write_event_only_wav(full_wav_path: str, out_wav_path: str, intervals_s: list[tuple[float, float]]) -> None:
     if not os.path.exists(full_wav_path):
@@ -307,3 +424,82 @@ def write_event_only_wav(full_wav_path: str, out_wav_path: str, intervals_s: lis
 
     out = np.concatenate(segs, axis=0)
     wavfile.write(out_wav_path, fs, out)
+
+
+def compute_audio_spectrogram(wav_path: str, out_csv_path: str, out_png_path: str,
+                             *, win_s: float = SPEC_WIN_S, overlap: float = SPEC_OVERLAP,
+                             nfft: int = SPEC_NFFT, max_hz: float | None = SPEC_MAX_HZ) -> None:
+    if not os.path.exists(wav_path):
+        raise RuntimeError(f"WAV not found: {wav_path}")
+
+    fs, audio = wavfile.read(wav_path)
+    if audio.ndim > 1:
+        audio = audio[:, 0]
+
+    if np.issubdtype(audio.dtype, np.integer):
+        audio = audio.astype(np.float64) / np.iinfo(audio.dtype).max
+    else:
+        audio = audio.astype(np.float64)
+
+    audio = audio[np.isfinite(audio)]
+    if audio.size == 0:
+        raise RuntimeError("Audio empty.")
+
+    win_len = int(round(win_s * fs))
+    if win_len < 16:
+        raise RuntimeError("SPEC_WIN_S too small (window < 16 samples).")
+
+    if nfft < win_len:
+        nfft = int(2 ** math.ceil(math.log2(win_len)))
+
+    hop = int(round(win_len * (1.0 - overlap)))
+    hop = max(1, hop)
+
+    window = np.hanning(win_len)
+
+    n_frames = 1 + (audio.size - win_len) // hop if audio.size >= win_len else 0
+    if n_frames <= 0:
+        raise RuntimeError("Audio too short for chosen spectrogram window.")
+
+    freqs = np.fft.rfftfreq(nfft, d=1.0 / fs)
+    fmask = freqs <= float(max_hz) if max_hz is not None else slice(None)
+    freqs_use = freqs[fmask]
+
+    spec_db = np.empty((freqs_use.size, n_frames), dtype=np.float64)
+    for i in range(n_frames):
+        start = i * hop
+        seg = audio[start:start + win_len]
+        segw = seg * window
+        X = np.fft.rfft(segw, n=nfft)
+        P = (np.abs(X) ** 2)
+        P = P[fmask]
+        spec_db[:, i] = 10.0 * np.log10(np.maximum(P, 1e-20))
+
+    t_s = (np.arange(n_frames) * hop + (win_len / 2.0)) / fs
+
+    chunks = []
+    for ti in range(n_frames):
+        chunks.append(pd.DataFrame({
+            "t_s": np.full(freqs_use.size, t_s[ti], dtype=np.float64),
+            "freq_hz": freqs_use.astype(np.float64),
+            "mag_db": spec_db[:, ti].astype(np.float64),
+        }))
+    df = pd.concat(chunks, ignore_index=True)
+    df["t_s"] = df["t_s"].round(4)
+    df["freq_hz"] = df["freq_hz"].round(2)
+    df["mag_db"] = df["mag_db"].round(2)
+    df.to_csv(out_csv_path, index=False)
+
+    fig, ax = plt.subplots(figsize=(10.5, 5.4))
+    im = ax.imshow(
+        spec_db, origin="lower", aspect="auto",
+        extent=[t_s[0], t_s[-1], freqs_use[0], freqs_use[-1]],
+        cmap=SPEC_CMAP,
+    )
+    ax.set_title("Audio Spectrogram (STFT) - Event Audio Only")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency (Hz)")
+    fig.colorbar(im, ax=ax, label="Magnitude (dB, relative)")
+    fig.tight_layout()
+    fig.savefig(out_png_path, dpi=PLOT_DPI)
+    plt.close(fig)

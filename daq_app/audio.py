@@ -2,11 +2,8 @@
 import sounddevice as sd
 import soundfile as sf
 
-class AudioRecorder:
-    """
-    Records audio to disk using sounddevice + soundfile.
-    """
 
+class AudioRecorder:
     def __init__(self, wav_path: str, fs: int, channels: int, device=None):
         self.wav_path = wav_path
         self.fs = fs

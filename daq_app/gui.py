@@ -8,25 +8,28 @@ import os
 from .config import (
     RUNS_DIR, FORCE_THRESHOLD_N, START_ABOVE_CYCLES, END_BELOW_CYCLES,
     PRE_SAMPLES, POST_SAMPLES, AUTO_STOP_SECONDS, AUDIO_FS, AUDIO_CHANNELS, RMS_WINDOW_S,
-    VESC_DEFAULT_ENABLED, VESC_DEFAULT_BAUD, VESC_MODES,
-    VESC_DEFAULT_MODE, VESC_DEFAULT_SETPOINT,
-    VESC_DEFAULT_RAMP_DUTY_PER_S, VESC_DEFAULT_RAMP_RPM_PER_S,
-    VESC_DEFAULT_RAMP_ENABLE, VESC_DEFAULT_HOLD_FINAL,
+    VESC_DEFAULT_ENABLED, VESC_DEFAULT_BAUD, VESC_MODES
 )
 from .utils import ensure_dir, now_stamp, sanitize_run_name
 from .worker import RunWorker
 from .vesc import VESCConfig
 
+
 @dataclass
 class RunPaths:
     base_name: str
-    raw_event_csv: str
+    raw_event_csv: str          # TEMP file; deleted at end
     wav_full_path: str
     wav_event_path: str
     combined_csv: str
-    plot_png: str
     spectrogram_csv: str
     spectrogram_png: str
+
+    # New overlay plots
+    overlay_all_png: str
+    overlay_rpm_png: str
+    overlay_power_png: str
+
 
 def make_run_paths(run_name: str) -> RunPaths:
     ensure_dir(RUNS_DIR)
@@ -34,15 +37,33 @@ def make_run_paths(run_name: str) -> RunPaths:
     run_name = sanitize_run_name(run_name)
     base = f"{run_name}_{stamp}"
 
-    raw_csv = os.path.join(RUNS_DIR, f"{base}.csv")
+    # NOTE: raw_event_csv is a TEMP file (deleted after post-processing)
+    raw_csv = os.path.join(RUNS_DIR, f"{base}_TEMP_RAW.csv")
+
     wav_full = os.path.join(RUNS_DIR, f"{base}_FULL.wav")
     wav_event = os.path.join(RUNS_DIR, f"{base}.wav")
     combined = os.path.join(RUNS_DIR, f"{base}_combined_event_aligned.csv")
-    plot_png = os.path.join(RUNS_DIR, f"{base}_force_audio_plot.png")
+
     spec_csv = os.path.join(RUNS_DIR, f"{base}_audio_spectrogram.csv")
     spec_png = os.path.join(RUNS_DIR, f"{base}_audio_spectrogram.png")
 
-    return RunPaths(base, raw_csv, wav_full, wav_event, combined, plot_png, spec_csv, spec_png)
+    overlay_all = os.path.join(RUNS_DIR, f"{base}_overlay_force_audio_rpm_power_duty.png")
+    overlay_rpm = os.path.join(RUNS_DIR, f"{base}_overlay_force_audio_rpm.png")
+    overlay_power = os.path.join(RUNS_DIR, f"{base}_overlay_force_audio_power.png")
+
+    return RunPaths(
+        base_name=base,
+        raw_event_csv=raw_csv,
+        wav_full_path=wav_full,
+        wav_event_path=wav_event,
+        combined_csv=combined,
+        spectrogram_csv=spec_csv,
+        spectrogram_png=spec_png,
+        overlay_all_png=overlay_all,
+        overlay_rpm_png=overlay_rpm,
+        overlay_power_png=overlay_power,
+    )
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -79,6 +100,7 @@ class App(tk.Tk):
         self.run_name_var = tk.StringVar(value="loadcell_run")
         ttk.Entry(runfrm, textvariable=self.run_name_var, width=32).pack(side="left", padx=(6, 0))
 
+        # VESC UI
         vfrm = ttk.LabelFrame(frm, text="VESC (optional)", padding=8)
         vfrm.pack(fill="x", pady=(10, 0))
 
@@ -94,28 +116,34 @@ class App(tk.Tk):
         ttk.Entry(vfrm, textvariable=self.vesc_baud_var, width=10).grid(row=0, column=4, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Mode:").grid(row=1, column=1, sticky="w", padx=6, pady=2)
-        self.vesc_mode_var = tk.StringVar(value=VESC_DEFAULT_MODE)
+        self.vesc_mode_var = tk.StringVar(value="duty")  # default now duty
         ttk.Combobox(vfrm, textvariable=self.vesc_mode_var, values=VESC_MODES, width=12, state="readonly").grid(row=1, column=2, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Setpoint:").grid(row=1, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_setpoint_var = tk.StringVar(value=str(VESC_DEFAULT_SETPOINT))
+        self.vesc_setpoint_var = tk.StringVar(value="1")  # default setpoint
         ttk.Entry(vfrm, textvariable=self.vesc_setpoint_var, width=10).grid(row=1, column=4, sticky="w", padx=6, pady=2)
         ttk.Label(vfrm, text="(rpm / A / duty 0-1)").grid(row=1, column=5, sticky="w", padx=6, pady=2)
 
+        # --- Ramp controls ---
         ttk.Label(vfrm, text="Ramp RPM/s:").grid(row=2, column=1, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_rpm_var = tk.StringVar(value=str(VESC_DEFAULT_RAMP_RPM_PER_S))
+        self.vesc_ramp_rpm_var = tk.StringVar(value="3000")
         ttk.Entry(vfrm, textvariable=self.vesc_ramp_rpm_var, width=10).grid(row=2, column=2, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Ramp duty/s:").grid(row=2, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_duty_var = tk.StringVar(value=str(VESC_DEFAULT_RAMP_DUTY_PER_S))
+        self.vesc_ramp_duty_var = tk.StringVar(value="0.10")  # default ramp duty/s
         ttk.Entry(vfrm, textvariable=self.vesc_ramp_duty_var, width=10).grid(row=2, column=4, sticky="w", padx=6, pady=2)
 
-        self.vesc_ramp_enable_var = tk.BooleanVar(value=VESC_DEFAULT_RAMP_ENABLE)
-        ttk.Checkbutton(vfrm, text="Enable ramp", variable=self.vesc_ramp_enable_var).grid(row=2, column=5, sticky="w", padx=6, pady=2)
+        self.vesc_ramp_enable_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(vfrm, text="Enable ramp", variable=self.vesc_ramp_enable_var).grid(
+            row=2, column=5, sticky="w", padx=6, pady=2
+        )
 
-        self.vesc_hold_final_var = tk.BooleanVar(value=VESC_DEFAULT_HOLD_FINAL)
-        ttk.Checkbutton(vfrm, text="Hold final duty", variable=self.vesc_hold_final_var).grid(row=3, column=5, sticky="w", padx=6, pady=2)
+        self.vesc_hold_final_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(vfrm, text="Hold final duty", variable=self.vesc_hold_final_var).grid(
+            row=3, column=5, sticky="w", padx=6, pady=2
+        )
 
+        # settings summary
         params = ttk.LabelFrame(frm, text="Run Settings (edit in script constants)", padding=8)
         params.pack(fill="x", pady=10)
 
@@ -161,12 +189,12 @@ class App(tk.Tk):
         try:
             ramp_rpm_per_s = float(self.vesc_ramp_rpm_var.get().strip())
         except Exception:
-            ramp_rpm_per_s = VESC_DEFAULT_RAMP_RPM_PER_S
+            ramp_rpm_per_s = 3000.0
 
         try:
             ramp_duty_per_s = float(self.vesc_ramp_duty_var.get().strip())
         except Exception:
-            ramp_duty_per_s = VESC_DEFAULT_RAMP_DUTY_PER_S
+            ramp_duty_per_s = 0.10
 
         hold_final_duty = bool(self.vesc_hold_final_var.get())
 
@@ -199,6 +227,7 @@ class App(tk.Tk):
 
             self.start_btn.configure(state="disabled")
             self.stop_btn.configure(state="normal")
+
         except Exception as e:
             messagebox.showerror("Start Run Failed", str(e))
             self.worker = None
@@ -214,18 +243,22 @@ class App(tk.Tk):
         try:
             while True:
                 msg_type, payload = self.gui_queue.get_nowait()
+
                 if msg_type == "status":
                     self.status_var.set(payload)
                     self.text.insert("end", f"[STATUS] {payload}\n")
                     self.text.see("end")
+
                 elif msg_type == "line":
                     self.text.insert("end", payload + "\n")
                     self.text.see("end")
+
                 elif msg_type == "done":
                     self.status_var.set("Idle.")
                     self.text.insert("end", f"\n=== RUN COMPLETE ===\n{payload}\n")
                     self.text.see("end")
                     self._reset_buttons()
+
                 elif msg_type == "error":
                     self.status_var.set("Error.")
                     self.text.insert("end", f"\n[ERROR] {payload}\n")

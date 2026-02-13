@@ -135,46 +135,7 @@ def postprocess_event_aligned(force_csv_path: str, wav_path: str, out_csv_path: 
     df_out.to_csv(out_csv_path, index=False)
 
 
-def save_force_audio_plot(combined_csv_path: str, out_png_path: str, title: str = "Force vs Audio RMS (Post-Processed)") -> None:
-    df = pd.read_csv(combined_csv_path)
-    required = {"t_event_s", "force_N", "audio_rms_dbfs"}
-    if not required.issubset(df.columns):
-        raise RuntimeError(f"Combined CSV missing required columns: {sorted(required)}")
-
-    t = df["t_event_s"].astype(float).values
-    force = df["force_N"].astype(float).values
-    audio_db = df["audio_rms_dbfs"].astype(float).values
-
-    fig, ax_audio = plt.subplots(figsize=(10, 5.2))
-    ax_force = ax_audio.twinx()
-
-    ax_audio.plot(t, audio_db, color="tab:orange", linewidth=1.8, label="Audio (dBFS)")
-    ax_force.plot(t, force, color="tab:blue", linewidth=1.8, label="Force (N)")
-
-    ax_audio.set_title(title)
-    ax_audio.set_xlabel("Time (s)")
-    ax_audio.set_ylabel("Audio Level (dBFS)", color="tab:orange")
-    ax_force.set_ylabel("Force (N)", color="tab:blue")
-
-    ax_audio.tick_params(axis="y", colors="tab:orange")
-    ax_force.tick_params(axis="y", colors="tab:blue")
-    ax_audio.grid(True, which="both", alpha=0.3)
-
-    h1, l1 = ax_audio.get_legend_handles_labels()
-    h2, l2 = ax_force.get_legend_handles_labels()
-    ax_audio.legend(h1 + h2, l1 + l2, loc="best")
-
-    fig.tight_layout()
-    fig.savefig(out_png_path, dpi=PLOT_DPI)
-    plt.close(fig)
-
-
 def _add_right_axis(ax_base, offset_axes: float):
-    """
-    Create an additional right-side y-axis and offset it to the right.
-    offset_axes is in axes coordinates: 1.0 is the normal right spine,
-    1.10 moves it further right, etc.
-    """
     ax = ax_base.twinx()
     ax.spines["right"].set_position(("axes", offset_axes))
     ax.set_frame_on(True)
@@ -183,14 +144,6 @@ def _add_right_axis(ax_base, offset_axes: float):
 
 
 def save_overlay_force_audio_rpm_power_duty(combined_csv_path: str, out_png_path: str) -> None:
-    """
-    Single graph overlay:
-    - Force (left axis)
-    - Audio RMS dBFS (right axis #1)
-    - RPM (right axis #2)
-    - Power W (right axis #3)
-    - Duty (right axis #4)
-    """
     df = pd.read_csv(combined_csv_path)
 
     required = {"t_event_s", "force_N", "audio_rms_dbfs"}
@@ -208,19 +161,16 @@ def save_overlay_force_audio_rpm_power_duty(combined_csv_path: str, out_png_path
     handles = []
     labels = []
 
-    # Force
     p1, = ax_force.plot(t, df["force_N"].astype(float).values, linewidth=1.9, color="tab:blue", label="Force (N)")
     ax_force.set_ylabel("Force (N)", color="tab:blue")
     ax_force.tick_params(axis="y", colors="tab:blue")
     handles.append(p1); labels.append("Force (N)")
 
-    # Audio
     p2, = ax_audio.plot(t, df["audio_rms_dbfs"].astype(float).values, linewidth=1.6, color="tab:orange", label="Audio (dBFS)")
     ax_audio.set_ylabel("Audio (dBFS)", color="tab:orange")
     ax_audio.tick_params(axis="y", colors="tab:orange")
     handles.append(p2); labels.append("Audio (dBFS)")
 
-    # RPM
     if "vesc_rpm" in df.columns:
         p3, = ax_rpm.plot(t, df["vesc_rpm"].astype(float).values, linewidth=1.5, color="tab:purple", label="RPM")
         ax_rpm.set_ylabel("RPM", color="tab:purple")
@@ -229,7 +179,6 @@ def save_overlay_force_audio_rpm_power_duty(combined_csv_path: str, out_png_path
     else:
         ax_rpm.set_visible(False)
 
-    # Power
     if "vesc_power_W" in df.columns:
         p4, = ax_power.plot(t, df["vesc_power_W"].astype(float).values, linewidth=1.5, color="tab:red", label="Power (W)")
         ax_power.set_ylabel("Power (W)", color="tab:red")
@@ -238,7 +187,6 @@ def save_overlay_force_audio_rpm_power_duty(combined_csv_path: str, out_png_path
     else:
         ax_power.set_visible(False)
 
-    # Duty
     if "vesc_duty" in df.columns:
         p5, = ax_duty.plot(t, df["vesc_duty"].astype(float).values, linewidth=1.5, color="tab:green", label="Duty")
         ax_duty.set_ylabel("Duty", color="tab:green")
@@ -251,7 +199,7 @@ def save_overlay_force_audio_rpm_power_duty(combined_csv_path: str, out_png_path
     ax_force.set_xlabel("Time (s)")
     ax_force.grid(True, alpha=0.3)
 
-    ax_force.legend(handles, labels, loc="best")
+    ax_force.legend(handles, labels, loc="upper left")
 
     fig.tight_layout()
     fig.savefig(out_png_path, dpi=PLOT_DPI)
@@ -259,9 +207,6 @@ def save_overlay_force_audio_rpm_power_duty(combined_csv_path: str, out_png_path
 
 
 def save_overlay_force_audio_rpm(combined_csv_path: str, out_png_path: str) -> None:
-    """
-    Single graph overlay: Force + Audio + RPM
-    """
     df = pd.read_csv(combined_csv_path)
 
     required = {"t_event_s", "force_N", "audio_rms_dbfs"}
@@ -297,7 +242,8 @@ def save_overlay_force_audio_rpm(combined_csv_path: str, out_png_path: str) -> N
     ax_force.set_title("Overlay: Force + Audio + RPM")
     ax_force.set_xlabel("Time (s)")
     ax_force.grid(True, alpha=0.3)
-    ax_force.legend(handles, labels, loc="best")
+
+    ax_force.legend(handles, labels, loc="upper left")
 
     fig.tight_layout()
     fig.savefig(out_png_path, dpi=PLOT_DPI)
@@ -305,9 +251,6 @@ def save_overlay_force_audio_rpm(combined_csv_path: str, out_png_path: str) -> N
 
 
 def save_overlay_force_audio_power(combined_csv_path: str, out_png_path: str) -> None:
-    """
-    Single graph overlay: Force + Audio + Power
-    """
     df = pd.read_csv(combined_csv_path)
 
     required = {"t_event_s", "force_N", "audio_rms_dbfs"}
@@ -343,7 +286,8 @@ def save_overlay_force_audio_power(combined_csv_path: str, out_png_path: str) ->
     ax_force.set_title("Overlay: Force + Audio + Power")
     ax_force.set_xlabel("Time (s)")
     ax_force.grid(True, alpha=0.3)
-    ax_force.legend(handles, labels, loc="best")
+
+    ax_force.legend(handles, labels, loc="upper left")
 
     fig.tight_layout()
     fig.savefig(out_png_path, dpi=PLOT_DPI)
@@ -369,8 +313,10 @@ def get_event_intervals_from_raw_csv(raw_event_csv: str) -> list[tuple[float, fl
     grp = df.groupby("event_id")["pc_elapsed_s"]
     intervals = []
     for _, s in grp:
-        a = float(s.min()) - EVENT_AUDIO_PAD_S
-        b = float(s.max()) + EVENT_AUDIO_PAD_S
+        a = float(s.min())  # pad handled via EVENT_AUDIO_PAD_S below
+        b = float(s.max())
+        a -= EVENT_AUDIO_PAD_S
+        b += EVENT_AUDIO_PAD_S
         intervals.append((max(0.0, a), max(0.0, b)))
 
     intervals.sort(key=lambda x: x[0])
@@ -426,9 +372,16 @@ def write_event_only_wav(full_wav_path: str, out_wav_path: str, intervals_s: lis
     wavfile.write(out_wav_path, fs, out)
 
 
-def compute_audio_spectrogram(wav_path: str, out_csv_path: str, out_png_path: str,
-                             *, win_s: float = SPEC_WIN_S, overlap: float = SPEC_OVERLAP,
-                             nfft: int = SPEC_NFFT, max_hz: float | None = SPEC_MAX_HZ) -> None:
+def compute_audio_spectrogram(
+    wav_path: str,
+    out_csv_path: str,
+    out_png_path: str,
+    *,
+    win_s: float = SPEC_WIN_S,
+    overlap: float = SPEC_OVERLAP,
+    nfft: int = SPEC_NFFT,
+    max_hz: float | None = SPEC_MAX_HZ
+) -> None:
     if not os.path.exists(wav_path):
         raise RuntimeError(f"WAV not found: {wav_path}")
 

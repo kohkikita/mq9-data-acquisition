@@ -22,14 +22,18 @@ from .audio import AudioRecorder
 from .vesc import VESCInterface, VESCConfig, VESCBackground
 from .postprocess import (
     postprocess_event_aligned,
-    save_force_audio_plot,
+    get_event_intervals_from_raw_csv,
+    write_event_only_wav,
+    compute_audio_spectrogram,
     save_overlay_force_audio_rpm_power_duty,
     save_overlay_force_audio_rpm,
     save_overlay_force_audio_power,
-    get_event_intervals_from_raw_csv,
-    write_event_only_wav,
-    compute_audio_spectrogram
 )
+
+
+class RunPaths:
+    # defined in gui.py; worker only relies on attributes
+    pass
 
 
 class RunWorker(threading.Thread):
@@ -50,13 +54,14 @@ class RunWorker(threading.Thread):
         vesc_stop = None
 
         try:
+            # ---------------- STM32 connect ----------------
             port = find_stm32_port()
             self.gui_queue.put(("status", f"Serial: {port} @ {BAUD}"))
 
             ser = serial.Serial(port, BAUD, timeout=SERIAL_TIMEOUT_S)
             time.sleep(2.0)
 
-            # Optional VESC connect + background loop
+            # ---------------- Optional VESC connect ----------------
             if self.vesc_cfg and self.vesc_cfg.enabled and (self.vesc_cfg.mode or "disabled") != "disabled":
                 self.gui_queue.put(("status", "Connecting to VESC..."))
                 vesc = VESCInterface(self.vesc_cfg)
@@ -68,12 +73,14 @@ class RunWorker(threading.Thread):
                 vesc_bg.start()
                 self.gui_queue.put(("status", f"VESC background loop running (poll={VESC_POLL_HZ} Hz, cmd={VESC_CMD_HZ} Hz)"))
 
+            # ---------------- Start run timebase + audio ----------------
             t0 = time.perf_counter()
 
             self.gui_queue.put(("status", "Starting audio (temporary full recording)..."))
             audio = AudioRecorder(self.paths.wav_full_path, AUDIO_FS, AUDIO_CHANNELS, device=self.mic_device)
             audio.start()
 
+            # ---------------- Event detection state ----------------
             pre_buffer = deque(maxlen=PRE_SAMPLES)
             in_event = False
             post_remaining = 0
@@ -84,6 +91,7 @@ class RunWorker(threading.Thread):
             above_count = 0
             below_count = 0
 
+            # ---------------- Main logging loop (TEMP raw CSV) ----------------
             with open(self.paths.raw_event_csv, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -95,6 +103,8 @@ class RunWorker(threading.Thread):
                 self.gui_queue.put(("status", f"Recording... ({self.paths.base_name})"))
 
                 while not self._stop_req.is_set():
+                    now_pc = time.perf_counter()
+
                     raw = ser.readline()
                     if not raw:
                         continue
@@ -125,7 +135,7 @@ class RunWorker(threading.Thread):
                         "line",
                         f"t={stm32_ms:8d} ms | pc={t_elapsed:8.3f} s | "
                         f"F={force_N:7.3f} N | "
-                        f"VESC rpm={vesc_vals['vesc_rpm'] if np.isfinite(vesc_vals['vesc_rpm']) else 'NA'} "
+                        f"VESC rpm={vesc_vals['vesc_rpm'] if np.isfinite(vesc_vals['vesc_rpm']) else 'NA'}"
                     ))
 
                     row = [
@@ -138,8 +148,6 @@ class RunWorker(threading.Thread):
                         vesc_vals["vesc_temp_mos_C"],
                         vesc_vals["vesc_power_W"],
                     ]
-
-                    now_pc = time.perf_counter()
 
                     if not in_event:
                         pre_buffer.append(row)
@@ -167,12 +175,14 @@ class RunWorker(threading.Thread):
                                 f.flush()
                         else:
                             above_count = 0
+
                             if saw_any_event:
                                 if below_since is None:
                                     below_since = now_pc
                                 elif (now_pc - below_since) >= AUTO_STOP_SECONDS:
                                     self.gui_queue.put(("status", f"AUTO-STOP: below {FORCE_THRESHOLD_N} N for {AUTO_STOP_SECONDS:.1f}s"))
                                     break
+
                     else:
                         row[0] = event_id
                         writer.writerow(row)
@@ -201,7 +211,7 @@ class RunWorker(threading.Thread):
                             below_since = None
                             below_count = 0
 
-            # teardown
+            # ---------------- teardown: stop background + audio + serial ----------------
             self.gui_queue.put(("status", "Stopping audio..."))
             try:
                 audio.stop()
@@ -223,21 +233,9 @@ class RunWorker(threading.Thread):
                 except Exception:
                     pass
 
-            # post-processing
+            # ---------------- post-processing ----------------
             self.gui_queue.put(("status", "Post-processing: creating combined CSV (aligned to force + VESC)..."))
             postprocess_event_aligned(self.paths.raw_event_csv, self.paths.wav_full_path, self.paths.combined_csv, RMS_WINDOW_S)
-
-            self.gui_queue.put(("status", "Saving force/audio plot PNG..."))
-            save_force_audio_plot(self.paths.combined_csv, self.paths.plot_png)
-
-            # --- Additional plots ---
-            overlay_all_png = self.paths.combined_csv.replace("_combined_event_aligned.csv", "_overlay_ALL.png")
-            overlay_rpm_png = self.paths.combined_csv.replace("_combined_event_aligned.csv", "_overlay_RPM.png")
-            overlay_pwr_png = self.paths.combined_csv.replace("_combined_event_aligned.csv", "_overlay_POWER.png")
-
-            save_overlay_force_audio_rpm_power_duty(self.paths.combined_csv, overlay_all_png)
-            save_overlay_force_audio_rpm(self.paths.combined_csv, overlay_rpm_png)
-            save_overlay_force_audio_power(self.paths.combined_csv, overlay_pwr_png)
 
             self.gui_queue.put(("status", "Extracting event-only audio WAV..."))
             intervals = get_event_intervals_from_raw_csv(self.paths.raw_event_csv)
@@ -248,31 +246,52 @@ class RunWorker(threading.Thread):
             self.gui_queue.put(("status", "Computing spectrogram (event-only audio)..."))
             compute_audio_spectrogram(self.paths.wav_event_path, self.paths.spectrogram_csv, self.paths.spectrogram_png)
 
+            self.gui_queue.put(("status", "Saving overlay plots..."))
+            save_overlay_force_audio_rpm_power_duty(self.paths.combined_csv, self.paths.overlay_all_png)
+            save_overlay_force_audio_rpm(self.paths.combined_csv, self.paths.overlay_rpm_png)
+            save_overlay_force_audio_power(self.paths.combined_csv, self.paths.overlay_power_png)
+
+            # Delete temp files user doesn't want saved
             try:
                 os.remove(self.paths.wav_full_path)
             except Exception:
                 pass
+            try:
+                os.remove(self.paths.raw_event_csv)  # TEMP raw csv deleted
+            except Exception:
+                pass
 
-            self.gui_queue.put(("done",
+            self.gui_queue.put((
+                "done",
                 "Done.\n"
-                f"Raw CSV: {self.paths.raw_event_csv}\n"
                 f"WAV (event-only): {self.paths.wav_event_path}\n"
                 f"Combined (force+vesc aligned): {self.paths.combined_csv}\n"
-                f"Force/Audio Plot: {self.paths.plot_png}\n"
                 f"Spectrogram CSV: {self.paths.spectrogram_csv}\n"
                 f"Spectrogram Plot: {self.paths.spectrogram_png}\n"
+                f"Overlay (Force+Audio+RPM+Power+Duty): {self.paths.overlay_all_png}\n"
+                f"Overlay (Force+Audio+RPM): {self.paths.overlay_rpm_png}\n"
+                f"Overlay (Force+Audio+Power): {self.paths.overlay_power_png}\n"
             ))
 
         except Exception as e:
+            # Ensure background thread is stopped on error too
             try:
                 if vesc_bg is not None and vesc_stop is not None:
                     vesc_stop.set()
                     vesc_bg.join(timeout=1.0)
             except Exception:
                 pass
+
             try:
                 if vesc is not None:
                     vesc.close()
+            except Exception:
+                pass
+
+            # Best-effort cleanup of temp raw csv if we errored
+            try:
+                if hasattr(self.paths, "raw_event_csv") and self.paths.raw_event_csv and os.path.exists(self.paths.raw_event_csv):
+                    os.remove(self.paths.raw_event_csv)
             except Exception:
                 pass
 

@@ -1,0 +1,1 @@
+numpy scipy pandas matplotlib sounddevice soundfile pyserial

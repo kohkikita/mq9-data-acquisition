@@ -135,6 +135,7 @@ class RunWorker(threading.Thread):
                         "line",
                         f"t={stm32_ms:8d} ms | pc={t_elapsed:8.3f} s | "
                         f"F={force_N:7.3f} N | "
+                        f"VESC Duty={vesc_vals['vesc_duty'] if np.isfinite(vesc_vals['vesc_duty']) else 'NA'} | "
                         f"VESC rpm={vesc_vals['vesc_rpm'] if np.isfinite(vesc_vals['vesc_rpm']) else 'NA'}"
                     ))
 

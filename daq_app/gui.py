@@ -5,11 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 
-from .config import (
-    RUNS_DIR, FORCE_THRESHOLD_N, START_ABOVE_CYCLES, END_BELOW_CYCLES,
-    PRE_SAMPLES, POST_SAMPLES, AUTO_STOP_SECONDS, AUDIO_FS, AUDIO_CHANNELS, RMS_WINDOW_S,
-    VESC_DEFAULT_ENABLED, VESC_DEFAULT_BAUD, VESC_MODES
-)
+from .config import *
 from .utils import ensure_dir, now_stamp, sanitize_run_name
 from .worker import RunWorker
 from .vesc import VESCConfig
@@ -116,29 +112,29 @@ class App(tk.Tk):
         ttk.Entry(vfrm, textvariable=self.vesc_baud_var, width=10).grid(row=0, column=4, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Mode:").grid(row=1, column=1, sticky="w", padx=6, pady=2)
-        self.vesc_mode_var = tk.StringVar(value="duty")  # default now duty
+        self.vesc_mode_var = tk.StringVar(value=VESC_DEFAULT_MODE)  # default now duty
         ttk.Combobox(vfrm, textvariable=self.vesc_mode_var, values=VESC_MODES, width=12, state="readonly").grid(row=1, column=2, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Setpoint:").grid(row=1, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_setpoint_var = tk.StringVar(value="1")  # default setpoint
+        self.vesc_setpoint_var = tk.StringVar(value=VESC_DEFAULT_SETPOINT)  # default setpoint
         ttk.Entry(vfrm, textvariable=self.vesc_setpoint_var, width=10).grid(row=1, column=4, sticky="w", padx=6, pady=2)
         ttk.Label(vfrm, text="(rpm / A / duty 0-1)").grid(row=1, column=5, sticky="w", padx=6, pady=2)
 
         # --- Ramp controls ---
         ttk.Label(vfrm, text="Ramp RPM/s:").grid(row=2, column=1, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_rpm_var = tk.StringVar(value="3000")
+        self.vesc_ramp_rpm_var = tk.StringVar(value=VESC_DEFAULT_RAMP_RPM_PER_S)
         ttk.Entry(vfrm, textvariable=self.vesc_ramp_rpm_var, width=10).grid(row=2, column=2, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Ramp duty/s:").grid(row=2, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_duty_var = tk.StringVar(value="0.10")  # default ramp duty/s
+        self.vesc_ramp_duty_var = tk.StringVar(value=VESC_DEFAULT_RAMP_DUTY_PER_S)  # default ramp duty/s
         ttk.Entry(vfrm, textvariable=self.vesc_ramp_duty_var, width=10).grid(row=2, column=4, sticky="w", padx=6, pady=2)
 
-        self.vesc_ramp_enable_var = tk.BooleanVar(value=True)
+        self.vesc_ramp_enable_var = tk.BooleanVar(value=VESC_DEFAULT_RAMP_ENABLE)
         ttk.Checkbutton(vfrm, text="Enable ramp", variable=self.vesc_ramp_enable_var).grid(
             row=2, column=5, sticky="w", padx=6, pady=2
         )
 
-        self.vesc_hold_final_var = tk.BooleanVar(value=True)
+        self.vesc_hold_final_var = tk.BooleanVar(value=VESC_DEFAULT_HOLD_FINAL)
         ttk.Checkbutton(vfrm, text="Hold final duty", variable=self.vesc_hold_final_var).grid(
             row=3, column=5, sticky="w", padx=6, pady=2
         )

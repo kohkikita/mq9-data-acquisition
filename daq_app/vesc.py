@@ -31,6 +31,7 @@ from dataclasses import dataclass
 import numpy as np
 import serial
 from serial.tools import list_ports
+from .config import *
 
 
 # ------------------------ COMM IDs ------------------------
@@ -220,11 +221,12 @@ class VESCConfig:
     ramp_enable: bool = True
     ramp_rpm_per_s: float = 3000.0
     ramp_duty_per_s: float = 0.10
+    ramp_down: float = 0.5
 
     # If True: once ramp reaches duty setpoint, hold indefinitely.
     # If False: hold for hold_seconds then ramp down to 0 and DISARM.
     hold_final_duty: bool = True
-    hold_seconds: float = 4.0
+    hold_seconds = VESC_DEFAULT_HOLD_TIME
 
     # Sensorless startup assist (duty mode)
     duty_kick_enable: bool = True
@@ -470,7 +472,7 @@ class VESCInterface:
 
         elif self._duty_state == "ramp_down":
             if ramp_en and dt > 0.0:
-                self._cmd_duty = ramp_toward(self._cmd_duty, 0.0, duty_rate * dt)
+                self._cmd_duty = ramp_toward(self._cmd_duty, 0.0, self.ramp_down * dt)
             else:
                 self._cmd_duty = 0.0
 

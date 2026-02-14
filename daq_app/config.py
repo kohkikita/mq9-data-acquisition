@@ -30,19 +30,20 @@ EVENT_AUDIO_PAD_S = 0.05
 MERGE_GAP_S = 0.02
 
 # ---------------- VESC SETTINGS ----------------
-# Defaults you requested:
+# Defaults:
 VESC_DEFAULT_ENABLED = True
 VESC_DEFAULT_BAUD = 115200
 VESC_MODES = ("disabled", "rpm", "current", "duty")
 
-# Background loop rates
+# Background loop rates:
 VESC_POLL_HZ = 20.0
 VESC_CMD_HZ = 50.0  # higher helps duty ramp feel smoother
 
-# Default GUI values you requested
+# Default GUI values:
 VESC_DEFAULT_MODE = "duty"
 VESC_DEFAULT_SETPOINT = 1.0
-VESC_DEFAULT_RAMP_DUTY_PER_S = 0.10
+VESC_DEFAULT_RAMP_DUTY_PER_S = 0.05
 VESC_DEFAULT_RAMP_RPM_PER_S = 3000.0
+VESC_DEFAULT_HOLD_TIME = 3.0
 VESC_DEFAULT_RAMP_ENABLE = True
-VESC_DEFAULT_HOLD_FINAL = True
+VESC_DEFAULT_HOLD_FINAL = False

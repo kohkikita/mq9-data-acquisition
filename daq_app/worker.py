@@ -15,7 +15,7 @@ from .config import (
     FORCE_THRESHOLD_N, PRE_SAMPLES, POST_SAMPLES, AUTO_STOP_SECONDS,
     START_ABOVE_CYCLES, END_BELOW_CYCLES,
     AUDIO_FS, AUDIO_CHANNELS, RMS_WINDOW_S,
-    VESC_POLL_HZ, VESC_CMD_HZ
+    VESC_POLL_HZ, VESC_CMD_HZ, FORCE_SCALE
 )
 from .utils import find_stm32_port, parse_stm32_line
 from .audio import AudioRecorder
@@ -118,6 +118,7 @@ class RunWorker(threading.Thread):
                         continue
 
                     force_N, stm32_ms = parsed
+                    force_N = FORCE_SCALE * force_N
                     t_elapsed = time.perf_counter() - t0
                     now_iso = datetime.now().isoformat()
 

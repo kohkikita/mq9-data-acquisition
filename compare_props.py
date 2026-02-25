@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 compare_props.py  —  Binned Mean ± Std Comparison
 
 Reads all files matching:
-    *_combined_event_aligned.csv
+    *_combined_event_aligned_audio_filled.csv
 from a directory (default: current directory), then compares propeller runs by
 binning Force (N) and computing, per bin:
 
@@ -39,8 +38,8 @@ import matplotlib.pyplot as plt
 # ------------------------- Discovery / Parsing -------------------------
 
 def find_combined_csvs(search_dir: Path) -> list[Path]:
-    """Find all *_combined_event_aligned.csv files in the given directory."""
-    return sorted(search_dir.glob("*_combined_event_aligned.csv"))
+    """Find all *_combined_event_aligned_audio_filled.csv files in the given directory."""
+    return sorted(search_dir.glob("*_combined_event_aligned_audio_filled.csv"))
 
 
 def infer_label_from_path(path: Path) -> str:
@@ -48,11 +47,11 @@ def infer_label_from_path(path: Path) -> str:
     Infer a readable label from filename.
 
     Example:
-      baseline5foot_2026-01-14_22-02-10_combined_event_aligned.csv
+      baseline5foot_2026-01-14_22-02-10_combined_event_aligned_audio_filled.csv
       -> baseline5foot
     """
     stem = path.stem
-    suffix = "_combined_event_aligned"
+    suffix = "_combined_event_aligned_audio_filled"
     if stem.endswith(suffix):
         stem = stem[: -len(suffix)]
 
@@ -222,7 +221,7 @@ def plot_binned_mean_std(
 def main():
     parser = argparse.ArgumentParser(
         description="Compare propellers by plotting binned mean ± std of audio_rms_dbfs vs force_N "
-                    "from *_combined_event_aligned.csv files."
+                    "from *_combined_event_aligned_audio_filled.csv files."
     )
     parser.add_argument("--dir", default=".", help="Directory to search (default: current directory).")
     parser.add_argument("--bin_width", type=float, default=1.0, help="Force bin width in N (default: 1.0).")
@@ -241,7 +240,7 @@ def main():
 
     csv_paths = find_combined_csvs(search_dir)
     if not csv_paths:
-        raise RuntimeError(f"No *_combined_event_aligned.csv files found in: {search_dir}")
+        raise RuntimeError(f"No *_combined_event_aligned_audio_filled.csv files found in: {search_dir}")
 
     print(f"Found {len(csv_paths)} combined CSV files in {search_dir}:")
     for p in csv_paths:

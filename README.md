@@ -1,116 +1,335 @@
-# Python Script for MQ-9A Propeller Optimization Data Acquisition
-**SDSU Engineering | General Atomics**
+# STM32 Load Cell + Event-Triggered Audio + VESC Control Logger
+
+## Overview
+
+This project implements a multi-modal, event-triggered data acquisition
+system for propeller and thrust stand testing.
+
+It synchronously captures:
+
+-   **Force (N)** from an STM32 load cell system over USB serial\
+-   **Audio** from a USB microphone (continuous temporary recording →
+    trimmed to event-only)\
+-   **VESC telemetry** (RPM, voltage, current, duty, MOSFET temperature,
+    input power)\
+-   **Optional VESC motor control** with smooth ramping (Duty / RPM /
+    Current modes)
+
+All signals are time-aligned and post-processed automatically.
+
+------------------------------------------------------------------------
+
+## System Architecture
+
+    STM32 Load Cell  ── USB Serial ──┐
+                                     ├── Python GUI + DAQ Worker
+    USB Microphone ── Audio Stream ──┘
+                                             │
+                                             ▼
+                                  Event Detection (Force)
+                                             │
+                                             ▼
+                             Post-Processing + Auto Outputs
+                                             │
+                                             ▼
+                             CSV + WAV + Spectrogram + Overlays
+
+If VESC is enabled:
+
+    Python → VESC UART (Command Streaming + Telemetry Polling)
+
+------------------------------------------------------------------------
+
+## Major Features
+
+### Event-Triggered Force Logging
+
+Force events are detected using configurable parameters in `config.py`,
+including:
+
+-   `FORCE_THRESHOLD_N`
+-   `START_ABOVE_CYCLES`
+-   `END_BELOW_CYCLES`
+-   `PRE_SAMPLES`
+-   `POST_SAMPLES`
+-   `AUTO_STOP_SECONDS`
+
+Behavior:
+
+-   Logging begins only after force exceeds threshold for a configured
+    number of cycles
+-   Includes pre-trigger and post-trigger samples
+-   Automatically stops once force falls below threshold for a defined
+    duration
+
+------------------------------------------------------------------------
+
+### Audio Capture (Event-Only Saved)
+
+-   A temporary **FULL WAV** is recorded during the run
+-   After run completion:
+    -   Only event intervals are extracted
+    -   An event-only WAV is written
+    -   Temporary files are deleted automatically
+
+This reduces disk usage and focuses analysis on physically meaningful
+regions.
+
+------------------------------------------------------------------------
+
+### VESC Telemetry (Optional)
+
+If enabled, the system logs:
+
+-   `vesc_rpm`
+-   `vesc_v_in_V`
+-   `vesc_i_motor_A`
+-   `vesc_i_in_A`
+-   `vesc_duty`
+-   `vesc_temp_mos_C`
+-   `vesc_power_W`
+
+Telemetry is decoded using native VESC packet framing with CRC
+validation.
+
+------------------------------------------------------------------------
+
+### VESC Command Modes
+
+Supported modes:
+
+-   `disabled`
+-   `rpm`
+-   `current`
+-   `duty`
+
+Duty mode includes:
+
+-   Smooth ramp up/down
+-   Optional hold at final duty
+-   Optional timed hold
+-   Sensorless startup assist ("kick")
+-   Minimum startup duty
+-   Automatic disarm
+
+Ramp rates and behavior are configurable via GUI.
+
+------------------------------------------------------------------------
+
+## Post-Processing Outputs
+
+After each run, the system automatically generates:
+
+### Primary Data Files
+
+  --------------------------------------------------------------------------------
+  File                             Description
+  -------------------------------- -----------------------------------------------
+  `*_combined_event_aligned.csv`   Force + audio RMS + interpolated VESC values
+
+  `*.wav`                          Event-only audio
+
+  `*_audio_spectrogram.csv`        Spectrogram data
+
+  `*_audio_spectrogram.png`        Spectrogram plot
+  --------------------------------------------------------------------------------
+
+### Overlay Plots
+
+Automatically generated:
+
+-   Force + Audio + RPM + Power + Duty
+-   Force + Audio + RPM
+-   Force + Audio + Power
+
+These provide rapid visual comparison between mechanical and acoustic
+behavior.
+
+------------------------------------------------------------------------
+
+## Output Directory Structure
+
+    runs/
+    ├── runname_TIMESTAMP.wav
+    ├── runname_TIMESTAMP_combined_event_aligned.csv
+    ├── runname_TIMESTAMP_audio_spectrogram.csv
+    ├── runname_TIMESTAMP_audio_spectrogram.png
+    ├── runname_TIMESTAMP_overlay_force_audio_rpm_power_duty.png
+    ├── runname_TIMESTAMP_overlay_force_audio_rpm.png
+    └── runname_TIMESTAMP_overlay_force_audio_power.png
+
+Run names are user-defined and automatically suffixed with date and time.
+
+Temporary files are deleted automatically:
+
+-   `_TEMP_RAW.csv`
+-   `_FULL.wav`
+
 
 ---
 
-## Requirements
+## How the Data Is Calculated
 
-- Python 3.7+
-- A connected STM32 microcontroller (e.g. Nucleo board) outputting serial data in the format:
+### Force Data
+
+- Parsed from STM32 serial output:
   ```
   Load=0.123 N, t=4567 ms
   ```
-- A USB microphone or audio input device
-- The following Python packages (installed via `requirements.txt`):
-
-| Package | Purpose |
-|---|---|
-| `numpy` | Numerical processing |
-| `pandas` | CSV handling and data alignment |
-| `scipy` | WAV file reading |
-| `pyserial` | STM32 serial communication |
-| `sounddevice` | Audio input stream |
-| `soundfile` | WAV file writing |
-| `matplotlib` | Post-run plot generation |
-| `tkinter` | GUI (bundled with most Python installs) |
+- Converted to:
+  - Force in Newtons
+  - PC-side elapsed time (`pc_elapsed_s`)
+- Logged continuously during detected events
 
 ---
 
-## How to Download the Script
+### Audio RMS (Sound Level)
 
-1. Create a folder in the desired location on your machine
-2. Open the folder in VSCode
-3. Open the terminal (`Cmd/Ctrl + J`)
-4. Clone the repository:
+Audio loudness is computed as **RMS amplitude per window**, expressed in **dBFS (decibels relative to full scale)**.
 
-```bash
-git clone https://github.com/kohkikita/mq9-data-acquisition.git
+#### Calculation
+
+For each RMS window:
+
+```
+rms = sqrt(mean(audio_window ** 2))
+audio_rms_dbfs = 20 * log10(rms + ε)
 ```
 
-5. Verify you are in the correct directory — your terminal should show: `mq9-data-acquisition`
-   - If not, use `cd` to navigate into the correct directory (press `Tab` to autocomplete directory names)
-6. Once in the correct directory, install the required dependencies:
+Where:
+- Audio samples are normalized to ±1.0
+- `0 dBFS` represents digital clipping
+- All real signals are negative dBFS values
 
-```bash
-pip3 install -r requirements.txt
+#### Interpretation
+
+- dBFS is **relative**, not absolute SPL
+- Valid for **comparisons between runs** as long as:
+  - Same microphone
+  - Same gain settings
+  - Same geometry and environment
+- Absolute acoustic pressure (dB SPL) requires calibration
+
+---
+
+### Time–Frequency Analysis (Spectrogram)
+
+The spectrogram is computed using a **Short-Time Fourier Transform (STFT)**.
+
+#### Processing Steps
+
+1. Event-only WAV is segmented into overlapping windows
+2. Each window is Hann-windowed
+3. FFT is computed per window
+4. Power spectrum is converted to dB:
+   ```
+   Power_dB = 10 * log10(|FFT|²)
+   ```
+5. Frequency bins are mapped vs time
+
+#### What It Shows
+
+- Blade-pass frequency and harmonics
+- Broadband noise content
+- Evolution of acoustic energy with thrust
+- Tonal vs broadband noise characteristics
+
+Because the same processing is applied to all runs, **spectral shape comparisons are valid across propellers**.
+
+---
+
+## GUI Usage
+
+1.  Connect STM32
+2.  Connect USB microphone
+3.  (Optional) Connect VESC
+4.  Run:
+
+``` bash
+python main.py
 ```
 
----
+5.  Enter a run name
+6.  Configure VESC (optional)
+7.  Click **Start Run**
+8.  Apply thrust
+9.  System auto-stops after event
 
-## How to Run the Script
-
-```bash
-python3 serialLogger.py
-```
-
-A GUI window will open. Press **Start Run** to begin recording.
+Outputs are saved in the `/runs` directory.
 
 ---
 
-## Configuration
+## Configuration Parameters
 
-All tunable parameters are located at the top of `serialLogger.py` under `USER SETTINGS`. No other part of the file needs to be edited for normal use.
+All acquisition parameters are defined at the top of the script:
 
-| Parameter | Default | Description |
-|---|---|---|
-| `BAUD` | `115200` | Serial baud rate — must match STM32 firmware |
-| `FORCE_THRESHOLD_N` | `0.4` | Force level (N) that triggers an event |
-| `PRE_SAMPLES` | `25` | Samples captured before event trigger |
-| `POST_SAMPLES` | `25` | Samples captured after event ends |
-| `AUTO_STOP_SECONDS` | `1.0` | Seconds below threshold before auto-stopping |
-| `START_ABOVE_CYCLES` | `15` | Consecutive samples above threshold required to start an event |
-| `END_BELOW_CYCLES` | `15` | Consecutive samples below threshold required to end an event |
-| `AUDIO_FS` | `48000` | Audio sample rate (Hz) |
-| `RMS_WINDOW_S` | `0.10` | RMS window size for audio post-processing (seconds) |
-| `RUNS_DIR` | `"runs"` | Output folder for all run files |
-
----
-
-## Output Files
-
-Each run produces 4 files inside the `runs/` folder, all sharing a timestamped base name (e.g. `loadcell_run_2025-01-01_12-00-00`):
-
-| File | Description |
-|---|---|
-| `***.csv` | Raw event CSV — force and timing data for all captured events |
-| `***.wav` | Full audio recording for the run |
-| `***_combined_event_aligned.csv` | Post-processed CSV — force and audio RMS aligned by time window |
-| `***_force_audio_plot.png` | Plot of force (N) vs. audio level (dBFS) over the event |
-
----
-
-## Common Issues
-
-**No serial ports found** — Make sure the STM32 is connected via USB and powered on before starting the script.
-
-**Wrong serial port selected** — The script auto-detects STM32/Nucleo/ST-Link descriptors. If detection fails and only one port exists, it will use that port. If multiple non-STM32 ports exist, the script will raise an error listing available ports — manually set the correct port in the code if needed.
-
-**No audio input detected** — The script uses your system default audio input device. If you need a specific microphone, set `mic_device` to the correct device index in the `start_run()` method. You can list available devices by running:
 ```python
-import sounddevice as sd
-print(sd.query_devices())
+FORCE_THRESHOLD_N
+PRE_SAMPLES
+POST_SAMPLES
+AUTO_STOP_SECONDS
+AUDIO_FS
+RMS_WINDOW_S
+SPEC_WIN_S
+SPEC_OVERLAP
+SPEC_NFFT
 ```
 
-**tkinter not found** — On Linux, tkinter may need to be installed separately:
-```bash
-sudo apt-get install python3-tk
+These allow tuning for different test setups without modifying core logic.
+
+---
+
+## Interpretation Guidelines
+
+### What You Can Claim
+
+- Relative loudness differences between propellers
+- Frequency content differences
+- Tonal vs broadband noise behavior
+- Noise evolution with thrust
+
+### What You Cannot Claim (Without Calibration)
+
+- Absolute sound pressure level (dB SPL)
+- Compliance with regulatory noise limits
+- Direct comparison to manufacturer SPL specs
+
+---
+
+## Dependencies
+
+Python 3.10+
+
+Required packages:
+
+    numpy
+    scipy
+    pandas
+    matplotlib
+    sounddevice
+    soundfile
+    pyserial
+    tkinter (standard library)
+
+Install:
+
+``` bash
+pip install numpy scipy pandas matplotlib sounddevice soundfile pyserial
 ```
 
 ---
 
-## ⚠️ Warnings
+## Known Limitations
 
-- This README uses `pip3` and `python3`. If you do not have `pip3` or `python3` installed, replace all instances with `pip` and `python` respectively.
-- The STM32 firmware **must** output data in the exact format `Load=X.XXX N, t=XXXX ms` or the script will not parse any values.
-- Do **not** close the GUI window mid-run — use the **Stop Run** button to ensure audio and serial connections are properly closed and post-processing completes.
-```
+- dBFS is not calibrated SPL
+- Spectrogram time base is event-relative, not absolute run time
+- Microphone placement must remain fixed between runs
+- High-frequency content limited by mic and ADC response
+
+---
+
+## Author Notes
+
+This system was designed to prioritize **repeatability, traceability, and physical relevance**, rather than raw data volume.  
+Event-triggered logging ensures that all stored data corresponds directly to meaningful mechanical operation.
+

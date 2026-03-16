@@ -12,10 +12,15 @@ import serial
 
 from .config import (
     BAUD, SERIAL_TIMEOUT_S,
-    FORCE_THRESHOLD_N, PRE_SAMPLES, POST_SAMPLES, AUTO_STOP_SECONDS,
-    START_ABOVE_CYCLES, END_BELOW_CYCLES,
     AUDIO_FS, AUDIO_CHANNELS, RMS_WINDOW_S,
-    VESC_POLL_HZ, VESC_CMD_HZ, FORCE_SCALE
+    VESC_POLL_HZ, VESC_CMD_HZ, FORCE_SCALE,
+    RPM_PLATEAU_AUTOSTOP_ENABLE,
+    RPM_PLATEAU_MIN_RPM,
+    RPM_PLATEAU_EPS_RPM,
+    RPM_PLATEAU_HOLD_S,
+    RPM_PLATEAU_MIN_DUTY,
+    RPM_PLATEAU_REQUIRE_VESC,
+    RPM_PLATEAU_SMOOTH_SAMPLES,
 )
 from .utils import find_stm32_port, parse_stm32_line
 from .audio import AudioRecorder
@@ -52,6 +57,8 @@ class RunWorker(threading.Thread):
         vesc = None
         vesc_bg = None
         vesc_stop = None
+        audio = None
+        ser = None
 
         try:
             # ---------------- STM32 connect ----------------
@@ -80,16 +87,14 @@ class RunWorker(threading.Thread):
             audio = AudioRecorder(self.paths.wav_full_path, AUDIO_FS, AUDIO_CHANNELS, device=self.mic_device)
             audio.start()
 
-            # ---------------- Event detection state ----------------
-            pre_buffer = deque(maxlen=PRE_SAMPLES)
-            in_event = False
-            post_remaining = 0
-            event_id = 0
-            saw_any_event = False
-            below_since = None
+            # Entire run is treated as one continuous event
+            event_id = 1
 
-            above_count = 0
-            below_count = 0
+            # RPM plateau auto-stop state
+            rpm_peak = None
+            rpm_peak_t = None
+            plateau_armed = False
+            rpm_hist = deque(maxlen=max(1, int(RPM_PLATEAU_SMOOTH_SAMPLES)))
 
             # ---------------- Main logging loop (TEMP raw CSV) ----------------
             with open(self.paths.raw_event_csv, "w", newline="") as f:
@@ -100,11 +105,9 @@ class RunWorker(threading.Thread):
                     "vesc_temp_mos_C", "vesc_power_W",
                 ])
 
-                self.gui_queue.put(("status", f"Recording... ({self.paths.base_name})"))
+                self.gui_queue.put(("status", f"Recording continuously... ({self.paths.base_name})"))
 
                 while not self._stop_req.is_set():
-                    now_pc = time.perf_counter()
-
                     raw = ser.readline()
                     if not raw:
                         continue
@@ -132,16 +135,24 @@ class RunWorker(threading.Thread):
                         "vesc_power_W": np.nan,
                     }
 
+                    duty_display = vesc_vals["vesc_duty"] if np.isfinite(vesc_vals["vesc_duty"]) else "NA"
+                    rpm_display = vesc_vals["vesc_rpm"] if np.isfinite(vesc_vals["vesc_rpm"]) else "NA"
+
                     self.gui_queue.put((
                         "line",
                         f"t={stm32_ms:8d} ms | pc={t_elapsed:8.3f} s | "
                         f"F={force_N:7.3f} N | "
-                        f"VESC Duty={vesc_vals['vesc_duty'] if np.isfinite(vesc_vals['vesc_duty']) else 'NA'} | "
-                        f"VESC rpm={vesc_vals['vesc_rpm'] if np.isfinite(vesc_vals['vesc_rpm']) else 'NA'}"
+                        f"VESC Duty={duty_display} | "
+                        f"VESC rpm={rpm_display}"
                     ))
 
-                    row = [
-                        event_id, now_iso, t_elapsed, stm32_ms, force_N, line,
+                    writer.writerow([
+                        event_id,
+                        now_iso,
+                        t_elapsed,
+                        stm32_ms,
+                        force_N,
+                        line,
                         vesc_vals["vesc_rpm"],
                         vesc_vals["vesc_v_in_V"],
                         vesc_vals["vesc_i_motor_A"],
@@ -149,79 +160,52 @@ class RunWorker(threading.Thread):
                         vesc_vals["vesc_duty"],
                         vesc_vals["vesc_temp_mos_C"],
                         vesc_vals["vesc_power_W"],
-                    ]
+                    ])
+                    f.flush()
 
-                    if not in_event:
-                        pre_buffer.append(row)
+                    # ---------------- RPM plateau auto-stop ----------------
+                    if RPM_PLATEAU_AUTOSTOP_ENABLE:
+                        rpm_raw = float(vesc_vals["vesc_rpm"]) if np.isfinite(vesc_vals["vesc_rpm"]) else np.nan
+                        duty = float(vesc_vals["vesc_duty"]) if np.isfinite(vesc_vals["vesc_duty"]) else np.nan
 
-                        if force_N >= FORCE_THRESHOLD_N:
-                            above_count += 1
-                            if above_count >= START_ABOVE_CYCLES:
-                                in_event = True
-                                post_remaining = 0
-                                event_id += 1
-                                saw_any_event = True
-                                below_since = None
-                                below_count = 0
+                        if np.isfinite(rpm_raw):
+                            rpm_hist.append(rpm_raw)
 
-                                self.gui_queue.put(("status", f"EVENT {event_id} START (above for {START_ABOVE_CYCLES} cycles)"))
+                        rpm_eval = float(np.mean(rpm_hist)) if len(rpm_hist) > 0 else np.nan
 
-                                for r in pre_buffer:
-                                    r[0] = event_id
-                                    writer.writerow(r)
-                                f.flush()
-                                pre_buffer.clear()
+                        vesc_ok = vesc is not None
+                        duty_ok = np.isfinite(duty) and (abs(duty) >= RPM_PLATEAU_MIN_DUTY)
+                        rpm_ok = np.isfinite(rpm_eval) and (abs(rpm_eval) >= RPM_PLATEAU_MIN_RPM)
 
-                                row[0] = event_id
-                                writer.writerow(row)
-                                f.flush()
-                        else:
-                            above_count = 0
-
-                            if saw_any_event:
-                                if below_since is None:
-                                    below_since = now_pc
-                                elif (now_pc - below_since) >= AUTO_STOP_SECONDS:
-                                    self.gui_queue.put(("status", f"AUTO-STOP: below {FORCE_THRESHOLD_N} N for {AUTO_STOP_SECONDS:.1f}s"))
-                                    break
-
-                    else:
-                        row[0] = event_id
-                        writer.writerow(row)
-                        f.flush()
-
-                        if post_remaining == 0:
-                            if force_N < FORCE_THRESHOLD_N:
-                                below_count += 1
-                                if below_count >= END_BELOW_CYCLES:
-                                    post_remaining = POST_SAMPLES
-                                    below_since = now_pc
-                                    self.gui_queue.put(("status", f"EVENT {event_id} tail {POST_SAMPLES} samples (below for {END_BELOW_CYCLES} cycles)"))
+                        if ((not RPM_PLATEAU_REQUIRE_VESC) or vesc_ok) and duty_ok and rpm_ok:
+                            if not plateau_armed:
+                                plateau_armed = True
+                                rpm_peak = rpm_eval
+                                rpm_peak_t = t_elapsed
+                                self.gui_queue.put(("status", f"RPM plateau monitor armed at {rpm_eval:.0f} rpm"))
                             else:
-                                below_count = 0
-
-                        if post_remaining > 0:
-                            post_remaining -= 1
-                            if post_remaining == 0:
-                                in_event = False
-                                pre_buffer.clear()
-                                above_count = 0
-                                below_count = 0
-                                self.gui_queue.put(("status", f"EVENT {event_id} COMPLETE"))
-
-                        if force_N >= FORCE_THRESHOLD_N:
-                            below_since = None
-                            below_count = 0
+                                if (rpm_peak is None) or (rpm_eval > (rpm_peak + RPM_PLATEAU_EPS_RPM)):
+                                    rpm_peak = rpm_eval
+                                    rpm_peak_t = t_elapsed
+                                elif (rpm_peak_t is not None) and ((t_elapsed - rpm_peak_t) >= RPM_PLATEAU_HOLD_S):
+                                    self.gui_queue.put((
+                                        "status",
+                                        f"AUTO-STOP: RPM plateau detected "
+                                        f"(peak {rpm_peak:.0f} rpm, no new peak for {RPM_PLATEAU_HOLD_S:.1f}s)"
+                                    ))
+                                    break
 
             # ---------------- teardown: stop background + audio + serial ----------------
             self.gui_queue.put(("status", "Stopping audio..."))
             try:
-                audio.stop()
+                if audio is not None:
+                    audio.stop()
             except Exception:
                 pass
 
             try:
-                ser.close()
+                if ser is not None:
+                    ser.close()
             except Exception:
                 pass
 
@@ -237,15 +221,20 @@ class RunWorker(threading.Thread):
 
             # ---------------- post-processing ----------------
             self.gui_queue.put(("status", "Post-processing: creating combined CSV (aligned to force + VESC)..."))
-            postprocess_event_aligned(self.paths.raw_event_csv, self.paths.wav_full_path, self.paths.combined_csv, RMS_WINDOW_S)
+            postprocess_event_aligned(
+                self.paths.raw_event_csv,
+                self.paths.wav_full_path,
+                self.paths.combined_csv,
+                RMS_WINDOW_S,
+            )
 
-            self.gui_queue.put(("status", "Extracting event-only audio WAV..."))
+            self.gui_queue.put(("status", "Saving run WAV..."))
             intervals = get_event_intervals_from_raw_csv(self.paths.raw_event_csv)
             if not intervals:
-                raise RuntimeError("No events found in raw CSV, so no event-only audio to save.")
+                raise RuntimeError("No logged samples found in raw CSV.")
             write_event_only_wav(self.paths.wav_full_path, self.paths.wav_event_path, intervals)
 
-            self.gui_queue.put(("status", "Computing spectrogram (event-only audio)..."))
+            self.gui_queue.put(("status", "Computing spectrogram..."))
             compute_audio_spectrogram(self.paths.wav_event_path, self.paths.spectrogram_csv, self.paths.spectrogram_png)
 
             self.gui_queue.put(("status", "Saving overlay plots..."))
@@ -259,14 +248,14 @@ class RunWorker(threading.Thread):
             except Exception:
                 pass
             try:
-                os.remove(self.paths.raw_event_csv)  # TEMP raw csv deleted
+                os.remove(self.paths.raw_event_csv)
             except Exception:
                 pass
 
             self.gui_queue.put((
                 "done",
                 "Done.\n"
-                f"WAV (event-only): {self.paths.wav_event_path}\n"
+                f"WAV: {self.paths.wav_event_path}\n"
                 f"Combined (force+vesc aligned): {self.paths.combined_csv}\n"
                 f"Spectrogram CSV: {self.paths.spectrogram_csv}\n"
                 f"Spectrogram Plot: {self.paths.spectrogram_png}\n"
@@ -276,7 +265,18 @@ class RunWorker(threading.Thread):
             ))
 
         except Exception as e:
-            # Ensure background thread is stopped on error too
+            try:
+                if audio is not None:
+                    audio.stop()
+            except Exception:
+                pass
+
+            try:
+                if ser is not None:
+                    ser.close()
+            except Exception:
+                pass
+
             try:
                 if vesc_bg is not None and vesc_stop is not None:
                     vesc_stop.set()
@@ -290,7 +290,6 @@ class RunWorker(threading.Thread):
             except Exception:
                 pass
 
-            # Best-effort cleanup of temp raw csv if we errored
             try:
                 if hasattr(self.paths, "raw_event_csv") and self.paths.raw_event_csv and os.path.exists(self.paths.raw_event_csv):
                     os.remove(self.paths.raw_event_csv)

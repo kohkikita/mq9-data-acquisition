@@ -21,7 +21,6 @@ class RunPaths:
     spectrogram_csv: str
     spectrogram_png: str
 
-    # New overlay plots
     overlay_all_png: str
     overlay_rpm_png: str
     overlay_power_png: str
@@ -33,9 +32,7 @@ def make_run_paths(run_name: str) -> RunPaths:
     run_name = sanitize_run_name(run_name)
     base = f"{run_name}_{stamp}"
 
-    # NOTE: raw_event_csv is a TEMP file (deleted after post-processing)
     raw_csv = os.path.join(RUNS_DIR, f"{base}_TEMP_RAW.csv")
-
     wav_full = os.path.join(RUNS_DIR, f"{base}_FULL.wav")
     wav_event = os.path.join(RUNS_DIR, f"{base}.wav")
     combined = os.path.join(RUNS_DIR, f"{base}_combined_event_aligned.csv")
@@ -64,7 +61,7 @@ def make_run_paths(run_name: str) -> RunPaths:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("STM32 Load Cell + USB Mic Logger (Event Audio Only) + VESC")
+        self.title("STM32 Load Cell + USB Mic Logger + VESC")
         self.geometry("1020x780")
 
         self.gui_queue = queue.Queue()
@@ -112,21 +109,20 @@ class App(tk.Tk):
         ttk.Entry(vfrm, textvariable=self.vesc_baud_var, width=10).grid(row=0, column=4, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Mode:").grid(row=1, column=1, sticky="w", padx=6, pady=2)
-        self.vesc_mode_var = tk.StringVar(value=VESC_DEFAULT_MODE)  # default now duty
+        self.vesc_mode_var = tk.StringVar(value=VESC_DEFAULT_MODE)
         ttk.Combobox(vfrm, textvariable=self.vesc_mode_var, values=VESC_MODES, width=12, state="readonly").grid(row=1, column=2, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Setpoint:").grid(row=1, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_setpoint_var = tk.StringVar(value=VESC_DEFAULT_SETPOINT)  # default setpoint
+        self.vesc_setpoint_var = tk.StringVar(value=VESC_DEFAULT_SETPOINT)
         ttk.Entry(vfrm, textvariable=self.vesc_setpoint_var, width=10).grid(row=1, column=4, sticky="w", padx=6, pady=2)
         ttk.Label(vfrm, text="(rpm / A / duty 0-1)").grid(row=1, column=5, sticky="w", padx=6, pady=2)
 
-        # --- Ramp controls ---
         ttk.Label(vfrm, text="Ramp RPM/s:").grid(row=2, column=1, sticky="w", padx=6, pady=2)
         self.vesc_ramp_rpm_var = tk.StringVar(value=VESC_DEFAULT_RAMP_RPM_PER_S)
         ttk.Entry(vfrm, textvariable=self.vesc_ramp_rpm_var, width=10).grid(row=2, column=2, sticky="w", padx=6, pady=2)
 
         ttk.Label(vfrm, text="Ramp duty/s:").grid(row=2, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_duty_var = tk.StringVar(value=VESC_DEFAULT_RAMP_DUTY_PER_S)  # default ramp duty/s
+        self.vesc_ramp_duty_var = tk.StringVar(value=VESC_DEFAULT_RAMP_DUTY_PER_S)
         ttk.Entry(vfrm, textvariable=self.vesc_ramp_duty_var, width=10).grid(row=2, column=4, sticky="w", padx=6, pady=2)
 
         self.vesc_ramp_enable_var = tk.BooleanVar(value=VESC_DEFAULT_RAMP_ENABLE)
@@ -139,19 +135,34 @@ class App(tk.Tk):
             row=3, column=5, sticky="w", padx=6, pady=2
         )
 
-        # settings summary
-        params = ttk.LabelFrame(frm, text="Run Settings (edit in script constants)", padding=8)
+        params = ttk.LabelFrame(frm, text="Run Settings", padding=8)
         params.pack(fill="x", pady=10)
 
-        ttk.Label(params, text=f"Threshold: {FORCE_THRESHOLD_N} N").grid(row=0, column=0, sticky="w", padx=6, pady=2)
-        ttk.Label(params, text=f"Start debounce: {START_ABOVE_CYCLES} cycles >= threshold").grid(row=0, column=1, sticky="w", padx=6, pady=2)
-        ttk.Label(params, text=f"End debounce: {END_BELOW_CYCLES} cycles < threshold").grid(row=0, column=2, sticky="w", padx=6, pady=2)
-        ttk.Label(params, text=f"Pre: {PRE_SAMPLES} samples").grid(row=1, column=0, sticky="w", padx=6, pady=2)
-        ttk.Label(params, text=f"Post: {POST_SAMPLES} samples").grid(row=1, column=1, sticky="w", padx=6, pady=2)
-        ttk.Label(params, text=f"Auto-stop: {AUTO_STOP_SECONDS} s below").grid(row=1, column=2, sticky="w", padx=6, pady=2)
-        ttk.Label(params, text=f"Audio: {AUDIO_FS} Hz, {AUDIO_CHANNELS} ch").grid(row=2, column=0, sticky="w", padx=6, pady=2)
-        ttk.Label(params, text=f"RMS window: {RMS_WINDOW_S} s").grid(row=2, column=1, sticky="w", padx=6, pady=2)
-        ttk.Label(params, text=f"Output dir: {RUNS_DIR}/").grid(row=2, column=2, sticky="w", padx=6, pady=2)
+        ttk.Label(params, text="Logging starts immediately when Start Run is pressed").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=6, pady=2
+        )
+        ttk.Label(params, text="Logging stops when Stop Run is pressed or RPM plateaus").grid(
+            row=1, column=0, columnspan=3, sticky="w", padx=6, pady=2
+        )
+        ttk.Label(params, text=f"Audio: {AUDIO_FS} Hz, {AUDIO_CHANNELS} ch").grid(
+            row=2, column=0, sticky="w", padx=6, pady=2
+        )
+        ttk.Label(params, text=f"RMS window: {RMS_WINDOW_S} s").grid(
+            row=2, column=1, sticky="w", padx=6, pady=2
+        )
+        ttk.Label(params, text=f"Output dir: {RUNS_DIR}/").grid(
+            row=2, column=2, sticky="w", padx=6, pady=2
+        )
+        ttk.Label(
+            params,
+            text=f"RPM plateau auto-stop: {'ON' if RPM_PLATEAU_AUTOSTOP_ENABLE else 'OFF'}"
+        ).grid(row=3, column=0, sticky="w", padx=6, pady=2)
+        ttk.Label(params, text=f"Min RPM to arm: {RPM_PLATEAU_MIN_RPM}").grid(
+            row=3, column=1, sticky="w", padx=6, pady=2
+        )
+        ttk.Label(params, text=f"Hold time: {RPM_PLATEAU_HOLD_S} s").grid(
+            row=3, column=2, sticky="w", padx=6, pady=2
+        )
 
         logfrm = ttk.LabelFrame(frm, text="Live Log", padding=8)
         logfrm.pack(fill="both", expand=True)

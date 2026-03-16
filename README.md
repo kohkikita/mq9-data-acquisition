@@ -1,120 +1,136 @@
-# STM32 Load Cell + Event-Triggered Audio + VESC Control Logger
+
+# STM32 Load Cell + Continuous Audio + VESC Control Logger
 
 ## Overview
 
-This project implements a multi-modal, event-triggered data acquisition
-system for propeller and thrust stand testing.
+This project implements a multi-modal data acquisition system for propeller and thrust stand testing.
 
 It synchronously captures:
 
--   **Force (N)** from an STM32 load cell system over USB serial\
--   **Audio** from a USB microphone (continuous temporary recording →
-    trimmed to event-only)\
--   **VESC telemetry** (RPM, voltage, current, duty, MOSFET temperature,
-    input power)\
--   **Optional VESC motor control** with smooth ramping (Duty / RPM /
-    Current modes)
+- **Force (N)** from an STM32 load cell system over USB serial
+- **Audio** from a USB microphone
+- **VESC telemetry** (RPM, voltage, current, duty, MOSFET temperature, input power)
+- **Optional VESC motor control** with smooth ramping (Duty / RPM / Current modes)
 
 All signals are time-aligned and post-processed automatically.
 
-------------------------------------------------------------------------
+Unlike the earlier version of the software, this system is now **continuous-logging**, not event-triggered. Logging starts immediately when **Start Run** is pressed.
+
+---
 
 ## System Architecture
 
-    STM32 Load Cell  ── USB Serial ──┐
-                                     ├── Python GUI + DAQ Worker
-    USB Microphone ── Audio Stream ──┘
-                                             │
-                                             ▼
-                                  Event Detection (Force)
-                                             │
-                                             ▼
-                             Post-Processing + Auto Outputs
-                                             │
-                                             ▼
+```
+STM32 Load Cell  ── USB Serial ──┐
+                                 ├── Python GUI + DAQ Worker
+USB Microphone ── Audio Stream ──┤
+                                 └── VESC UART (optional)
+                                            │
+                                            ▼
+                              Continuous Logging + Live Telemetry
+                                            │
+                                            ▼
+                             RPM Plateau Detection / Manual Stop
+                                            │
+                                            ▼
+                              Post-Processing + Auto Outputs
+                                            │
+                                            ▼
                              CSV + WAV + Spectrogram + Overlays
+```
 
 If VESC is enabled:
 
-    Python → VESC UART (Command Streaming + Telemetry Polling)
+```
+Python → VESC UART (Command Streaming + Telemetry Polling)
+```
 
-------------------------------------------------------------------------
+---
 
 ## Major Features
 
-### Event-Triggered Force Logging
+### Continuous Logging
 
-Force events are detected using configurable parameters in `config.py`,
-including:
-
--   `FORCE_THRESHOLD_N`
--   `START_ABOVE_CYCLES`
--   `END_BELOW_CYCLES`
--   `PRE_SAMPLES`
--   `POST_SAMPLES`
--   `AUTO_STOP_SECONDS`
+The application now logs continuously from the moment **Start Run** is pressed.
 
 Behavior:
 
--   Logging begins only after force exceeds threshold for a configured
-    number of cycles
--   Includes pre-trigger and post-trigger samples
--   Automatically stops once force falls below threshold for a defined
-    duration
+- Logging begins immediately when the run starts
+- Force, audio, and VESC telemetry are recorded together during the full run
+- The run stops when:
+  - the user presses **Stop Run**, or
+  - the software detects that **VESC RPM has plateaued**
 
-------------------------------------------------------------------------
+This matches the newer workflow where the ESC is controlled directly inside the DAQ app.
 
-### Audio Capture (Event-Only Saved)
+---
 
--   A temporary **FULL WAV** is recorded during the run
--   After run completion:
-    -   Only event intervals are extracted
-    -   An event-only WAV is written
-    -   Temporary files are deleted automatically
+### Audio Capture
 
-This reduces disk usage and focuses analysis on physically meaningful
-regions.
+- A temporary **FULL WAV** is recorded during the run
+- After run completion:
+  - The recorded run audio is saved as the final WAV output
+  - Spectrogram and audio RMS are computed automatically
+  - Temporary files are deleted automatically
 
-------------------------------------------------------------------------
+---
 
 ### VESC Telemetry (Optional)
 
 If enabled, the system logs:
 
--   `vesc_rpm`
--   `vesc_v_in_V`
--   `vesc_i_motor_A`
--   `vesc_i_in_A`
--   `vesc_duty`
--   `vesc_temp_mos_C`
--   `vesc_power_W`
+- `vesc_rpm`
+- `vesc_v_in_V`
+- `vesc_i_motor_A`
+- `vesc_i_in_A`
+- `vesc_duty`
+- `vesc_temp_mos_C`
+- `vesc_power_W`
 
-Telemetry is decoded using native VESC packet framing with CRC
-validation.
+Telemetry is decoded using native VESC packet framing with CRC validation.
 
-------------------------------------------------------------------------
+---
 
 ### VESC Command Modes
 
 Supported modes:
 
--   `disabled`
--   `rpm`
--   `current`
--   `duty`
+- `disabled`
+- `rpm`
+- `current`
+- `duty`
 
 Duty mode includes:
 
--   Smooth ramp up/down
--   Optional hold at final duty
--   Optional timed hold
--   Sensorless startup assist ("kick")
--   Minimum startup duty
--   Automatic disarm
+- Smooth ramp up/down
+- Optional hold at final duty
+- Optional timed hold
+- Sensorless startup assist ("kick")
+- Minimum startup duty
+- Automatic disarm
 
 Ramp rates and behavior are configurable via GUI.
 
-------------------------------------------------------------------------
+---
+
+### RPM Plateau Auto-Stop
+
+The system can automatically stop the run when motor RPM appears to have reached its practical limit.
+
+Behavior:
+
+- RPM monitoring arms only after RPM exceeds a minimum threshold
+- The software tracks the highest RPM reached so far
+- If RPM does not meaningfully exceed that peak for a configured time window, the run automatically stops
+
+Typical parameters:
+
+- `RPM_PLATEAU_MIN_RPM`
+- `RPM_PLATEAU_EPS_RPM`
+- `RPM_PLATEAU_HOLD_S`
+- `RPM_PLATEAU_MIN_DUTY`
+
+---
 
 ## Post-Processing Outputs
 
@@ -122,177 +138,87 @@ After each run, the system automatically generates:
 
 ### Primary Data Files
 
-  --------------------------------------------------------------------------------
-  File                             Description
-  -------------------------------- -----------------------------------------------
-  `*_combined_event_aligned.csv`   Force + audio RMS + interpolated VESC values
-
-  `*.wav`                          Event-only audio
-
-  `*_audio_spectrogram.csv`        Spectrogram data
-
-  `*_audio_spectrogram.png`        Spectrogram plot
-  --------------------------------------------------------------------------------
+| File | Description |
+|---|---|
+| `*_combined_event_aligned.csv` | Force + audio RMS + interpolated VESC values |
+| `*.wav` | Run audio |
+| `*_audio_spectrogram.csv` | Spectrogram data |
+| `*_audio_spectrogram.png` | Spectrogram plot |
 
 ### Overlay Plots
 
 Automatically generated:
 
--   Force + Audio + RPM + Power + Duty
--   Force + Audio + RPM
--   Force + Audio + Power
+- Force + Audio + RPM + Power + Duty
+- Force + Audio + RPM
+- Force + Audio + Power
 
-These provide rapid visual comparison between mechanical and acoustic
-behavior.
-
-------------------------------------------------------------------------
+---
 
 ## Output Directory Structure
 
-    runs/
-    ├── runname_TIMESTAMP.wav
-    ├── runname_TIMESTAMP_combined_event_aligned.csv
-    ├── runname_TIMESTAMP_audio_spectrogram.csv
-    ├── runname_TIMESTAMP_audio_spectrogram.png
-    ├── runname_TIMESTAMP_overlay_force_audio_rpm_power_duty.png
-    ├── runname_TIMESTAMP_overlay_force_audio_rpm.png
-    └── runname_TIMESTAMP_overlay_force_audio_power.png
-
-Run names are user-defined and automatically suffixed with date and time.
-
-Temporary files are deleted automatically:
-
--   `_TEMP_RAW.csv`
--   `_FULL.wav`
-
-
----
-
-## How the Data Is Calculated
-
-### Force Data
-
-- Parsed from STM32 serial output:
-  ```
-  Load=0.123 N, t=4567 ms
-  ```
-- Converted to:
-  - Force in Newtons
-  - PC-side elapsed time (`pc_elapsed_s`)
-- Logged continuously during detected events
-
----
-
-### Audio RMS (Sound Level)
-
-Audio loudness is computed as **RMS amplitude per window**, expressed in **dBFS (decibels relative to full scale)**.
-
-#### Calculation
-
-For each RMS window:
-
 ```
-rms = sqrt(mean(audio_window ** 2))
-audio_rms_dbfs = 20 * log10(rms + ε)
+runs/
+├── runname_TIMESTAMP.wav
+├── runname_TIMESTAMP_combined_event_aligned.csv
+├── runname_TIMESTAMP_audio_spectrogram.csv
+├── runname_TIMESTAMP_audio_spectrogram.png
+├── runname_TIMESTAMP_overlay_force_audio_rpm_power_duty.png
+├── runname_TIMESTAMP_overlay_force_audio_rpm.png
+└── runname_TIMESTAMP_overlay_force_audio_power.png
 ```
 
-Where:
-- Audio samples are normalized to ±1.0
-- `0 dBFS` represents digital clipping
-- All real signals are negative dBFS values
+Temporary files removed automatically:
 
-#### Interpretation
-
-- dBFS is **relative**, not absolute SPL
-- Valid for **comparisons between runs** as long as:
-  - Same microphone
-  - Same gain settings
-  - Same geometry and environment
-- Absolute acoustic pressure (dB SPL) requires calibration
-
----
-
-### Time–Frequency Analysis (Spectrogram)
-
-The spectrogram is computed using a **Short-Time Fourier Transform (STFT)**.
-
-#### Processing Steps
-
-1. Event-only WAV is segmented into overlapping windows
-2. Each window is Hann-windowed
-3. FFT is computed per window
-4. Power spectrum is converted to dB:
-   ```
-   Power_dB = 10 * log10(|FFT|²)
-   ```
-5. Frequency bins are mapped vs time
-
-#### What It Shows
-
-- Blade-pass frequency and harmonics
-- Broadband noise content
-- Evolution of acoustic energy with thrust
-- Tonal vs broadband noise characteristics
-
-Because the same processing is applied to all runs, **spectral shape comparisons are valid across propellers**.
+- `_TEMP_RAW.csv`
+- `_FULL.wav`
 
 ---
 
 ## GUI Usage
 
-1.  Connect STM32
-2.  Connect USB microphone
-3.  (Optional) Connect VESC
-4.  Run:
+1. Connect STM32
+2. Connect USB microphone
+3. (Optional) Connect VESC
+4. Run:
 
-``` bash
+```
 python main.py
 ```
 
-5.  Enter a run name
-6.  Configure VESC (optional)
-7.  Click **Start Run**
-8.  Apply thrust
-9.  System auto-stops after event
+5. Enter a run name
+6. Configure VESC settings if needed
+7. Press **Start Run**
+8. Apply throttle or allow ramp
+9. Run stops when:
+   - you press **Stop Run**, or
+   - RPM plateau detection triggers
 
-Outputs are saved in the `/runs` directory.
+Outputs are saved in `/runs`.
 
 ---
 
-## Configuration Parameters
+## Configuration
 
-All acquisition parameters are defined at the top of the script:
+Main parameters are located in:
 
-```python
-FORCE_THRESHOLD_N
-PRE_SAMPLES
-POST_SAMPLES
-AUTO_STOP_SECONDS
-AUDIO_FS
-RMS_WINDOW_S
-SPEC_WIN_S
-SPEC_OVERLAP
-SPEC_NFFT
+```
+daq_app/config.py
 ```
 
-These allow tuning for different test setups without modifying core logic.
+Examples:
 
----
-
-## Interpretation Guidelines
-
-### What You Can Claim
-
-- Relative loudness differences between propellers
-- Frequency content differences
-- Tonal vs broadband noise behavior
-- Noise evolution with thrust
-
-### What You Cannot Claim (Without Calibration)
-
-- Absolute sound pressure level (dB SPL)
-- Compliance with regulatory noise limits
-- Direct comparison to manufacturer SPL specs
+```
+BAUD
+SERIAL_TIMEOUT_S
+FORCE_SCALE
+AUDIO_FS
+RMS_WINDOW_S
+VESC_POLL_HZ
+VESC_CMD_HZ
+RPM_PLATEAU_MIN_RPM
+RPM_PLATEAU_HOLD_S
+```
 
 ---
 
@@ -302,18 +228,20 @@ Python 3.10+
 
 Required packages:
 
-    numpy
-    scipy
-    pandas
-    matplotlib
-    sounddevice
-    soundfile
-    pyserial
-    tkinter (standard library)
+```
+numpy
+scipy
+pandas
+matplotlib
+sounddevice
+soundfile
+pyserial
+tkinter
+```
 
 Install:
 
-``` bash
+```
 pip install numpy scipy pandas matplotlib sounddevice soundfile pyserial
 ```
 
@@ -322,14 +250,15 @@ pip install numpy scipy pandas matplotlib sounddevice soundfile pyserial
 ## Known Limitations
 
 - dBFS is not calibrated SPL
-- Spectrogram time base is event-relative, not absolute run time
 - Microphone placement must remain fixed between runs
-- High-frequency content limited by mic and ADC response
+- Spectrogram frequency range limited by microphone response
+- RPM plateau detection is heuristic
+- If VESC telemetry is unavailable, RPM auto-stop will not trigger
 
 ---
 
 ## Author Notes
 
-This system was designed to prioritize **repeatability, traceability, and physical relevance**, rather than raw data volume.  
-Event-triggered logging ensures that all stored data corresponds directly to meaningful mechanical operation.
+This system was designed for **repeatable propeller testing with synchronized mechanical and acoustic data**.
 
+Continuous logging combined with RPM plateau detection allows clean automated runs while keeping the workflow simple.

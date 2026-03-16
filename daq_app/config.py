@@ -5,13 +5,6 @@ BAUD = 115200
 SERIAL_TIMEOUT_S = 1.0
 
 FORCE_SCALE = 1.143
-FORCE_THRESHOLD_N = 0.8
-PRE_SAMPLES = 25
-POST_SAMPLES = 25
-AUTO_STOP_SECONDS = 1.0
-
-START_ABOVE_CYCLES = 15
-END_BELOW_CYCLES = 15
 
 AUDIO_FS = 48000
 AUDIO_CHANNELS = 1
@@ -48,3 +41,14 @@ VESC_DEFAULT_RAMP_RPM_PER_S = 3000.0
 VESC_DEFAULT_HOLD_TIME = 3.0
 VESC_DEFAULT_RAMP_ENABLE = True
 VESC_DEFAULT_HOLD_FINAL = False
+
+# ---------------- RPM PLATEAU AUTO-STOP ----------------
+# Run stops automatically if RPM has effectively stopped increasing
+# for RPM_PLATEAU_HOLD_S seconds after the monitor is armed.
+RPM_PLATEAU_AUTOSTOP_ENABLE = True
+RPM_PLATEAU_MIN_RPM = 1000.0        # do not arm below this RPM
+RPM_PLATEAU_EPS_RPM = 150.0         # require at least this increase to count as a new peak
+RPM_PLATEAU_HOLD_S = 5.0            # auto-stop if no meaningful new peak for this long
+RPM_PLATEAU_MIN_DUTY = 0.08         # only evaluate when |duty| is at least this value
+RPM_PLATEAU_REQUIRE_VESC = True     # if True, plateau logic only runs when VESC is connected
+RPM_PLATEAU_SMOOTH_SAMPLES = 8      # moving average length for RPM smoothing

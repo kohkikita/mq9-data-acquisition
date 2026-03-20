@@ -1,4 +1,7 @@
 # daq_app/gui.py
+from collections import deque
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from dataclasses import dataclass
 import queue
 import tkinter as tk
@@ -73,6 +76,14 @@ class App(tk.Tk):
 
         self._build_ui()
         self.after(50, self._poll_queue)
+        
+        # NEW: live data for plotting
+        self.live_window_s = 10.0
+        self.live_t = deque(maxlen=5000)
+        self.live_force = deque(maxlen=5000)
+        self.live_rpm = deque(maxlen=5000)
+        self.live_power = deque(maxlen=5000)
+        self.live_duty = deque(maxlen=5000)
 
     def _build_ui(self):
         frm = ttk.Frame(self, padding=10)

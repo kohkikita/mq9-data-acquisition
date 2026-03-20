@@ -131,6 +131,21 @@ class RunWorker(threading.Thread):
                         "vesc_temp_mos_C": np.nan,
                         "vesc_power_W": np.nan,
                     }
+                    # NEW: send live sample to GUI for plotting
+                    self.gui_queue.put((
+                        "sample",
+                        {
+                            "t": t_elapsed,
+                            "force": force_N,
+                            "rpm": vesc_vals["vesc_rpm"],
+                            "power": vesc_vals["vesc_power_W"],
+                            "duty": vesc_vals["vesc_duty"],
+                            "vin": vesc_vals["vesc_v_in_V"],
+                            "i_motor": vesc_vals["vesc_i_motor_A"],
+                            "i_in": vesc_vals["vesc_i_in_A"],
+                            "temp_mos": vesc_vals["vesc_temp_mos_C"],
+                        }
+                    ))
 
                     self.gui_queue.put((
                         "line",

@@ -140,10 +140,6 @@ class RunWorker(threading.Thread):
                             "rpm": vesc_vals["vesc_rpm"],
                             "power": vesc_vals["vesc_power_W"],
                             "duty": vesc_vals["vesc_duty"],
-                            "vin": vesc_vals["vesc_v_in_V"],
-                            "i_motor": vesc_vals["vesc_i_motor_A"],
-                            "i_in": vesc_vals["vesc_i_in_A"],
-                            "temp_mos": vesc_vals["vesc_temp_mos_C"],
                         }
                     ))
 

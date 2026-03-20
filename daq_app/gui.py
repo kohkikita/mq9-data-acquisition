@@ -163,6 +163,27 @@ class App(tk.Tk):
         ttk.Label(params, text=f"Audio: {AUDIO_FS} Hz, {AUDIO_CHANNELS} ch").grid(row=2, column=0, sticky="w", padx=6, pady=2)
         ttk.Label(params, text=f"RMS window: {RMS_WINDOW_S} s").grid(row=2, column=1, sticky="w", padx=6, pady=2)
         ttk.Label(params, text=f"Output dir: {RUNS_DIR}/").grid(row=2, column=2, sticky="w", padx=6, pady=2)
+        
+        # NEW: live plot
+        plotfrm = ttk.LabelFrame(frm, text="Live Plot", padding=8)
+        plotfrm.pack(fill="both", expand=False, pady=(0, 10))
+
+        self.fig = Figure(figsize=(10, 3.6), dpi=100)
+        self.ax_force = self.fig.add_subplot(111)
+        self.ax_rpm = self.ax_force.twinx()
+
+        self.ax_force.set_title("Live Force / RPM")
+        self.ax_force.set_xlabel("Time (s)")
+        self.ax_force.set_ylabel("Force (N)")
+        self.ax_rpm.set_ylabel("RPM")
+        self.ax_force.grid(True, alpha=0.3)
+
+        (self.force_line,) = self.ax_force.plot([], [])
+        (self.rpm_line,) = self.ax_rpm.plot([], [])
+
+        self.canvas = FigureCanvasTkAgg(self.fig, master=plotfrm)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.canvas.draw()
 
         logfrm = ttk.LabelFrame(frm, text="Live Log", padding=8)
         logfrm.pack(fill="both", expand=True)
@@ -221,6 +242,14 @@ class App(tk.Tk):
         if self.worker is not None:
             return
         try:
+            # NEW: clear live data buffers and plot
+            self.live_t.clear()
+            self.live_force.clear()
+            self.live_rpm.clear()
+            self.force_line.set_data([], [])
+            self.rpm_line.set_data([], [])
+            self.canvas.draw_idle()
+            
             run_name = self.run_name_var.get()
             self.current_paths = make_run_paths(run_name)
 
@@ -259,6 +288,17 @@ class App(tk.Tk):
                 elif msg_type == "line":
                     self.text.insert("end", payload + "\n")
                     self.text.see("end")
+                
+                # NEW: live sample update
+                elif msg_type == "sample":
+                    t = payload.get("t")
+                    force = payload.get("force")
+                    rpm = payload.get("rpm")
+
+                    if t is not None and force is not None:
+                        self.live_t.append(float(t))
+                        self.live_force.append(float(force))
+                        self.live_rpm.append(float(rpm) if rpm is not None else float("nan"))
 
                 elif msg_type == "done":
                     self.status_var.set("Idle.")
@@ -272,6 +312,7 @@ class App(tk.Tk):
                     self.text.see("end")
                     messagebox.showerror("Run Error", payload)
                     self._reset_buttons()
+        
         except queue.Empty:
             pass
         self.after(50, self._poll_queue)

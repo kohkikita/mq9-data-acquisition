@@ -274,6 +274,50 @@ class App(tk.Tk):
         self.status_var.set("Stop requested...")
         self.worker.request_stop()
         self.stop_btn.configure(state="disabled")
+        
+    # NEW: live plot update
+    def _update_plot(self):
+        try:
+            if self.live_t:
+                t_vals = list(self.live_t)
+                force_vals = list(self.live_force)
+                rpm_vals = list(self.live_rpm)
+
+                t_max = t_vals[-1]
+                t_min = max(0.0, t_max - self.live_window_s)
+
+                idx0 = 0
+                for i, t in enumerate(t_vals):
+                    if t >= t_min:
+                        idx0 = i
+                        break
+
+                x = t_vals[idx0:]
+                y_force = force_vals[idx0:]
+                y_rpm = rpm_vals[idx0:]
+
+                self.force_line.set_data(x, y_force)
+                self.rpm_line.set_data(x, y_rpm)
+
+                self.ax_force.set_xlim(t_min, max(t_min + 0.1, t_max))
+
+                if y_force:
+                    fmin = min(y_force)
+                    fmax = max(y_force)
+                    pad = max(0.1, (fmax - fmin) * 0.1 if fmax != fmin else 0.1)
+                    self.ax_force.set_ylim(fmin - pad, fmax + pad)
+
+                rpm_clean = [v for v in y_rpm if v == v]  # ignore NaN
+                if rpm_clean:
+                    rmin = min(rpm_clean)
+                    rmax = max(rpm_clean)
+                    pad = max(100.0, (rmax - rmin) * 0.1 if rmax != rmin else 100.0)
+                    self.ax_rpm.set_ylim(rmin - pad, rmax + pad)
+
+                self.canvas.draw_idle()
+
+        finally:
+            self.after(100, self._update_plot)
 
     def _poll_queue(self):
         try:

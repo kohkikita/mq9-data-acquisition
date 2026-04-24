@@ -74,16 +74,16 @@ class App(tk.Tk):
         self.worker = None
         self.current_paths = None
 
-        self._build_ui()
-        self.after(50, self._poll_queue)
-        
-        # NEW: live data for plotting
+        self.gui_queue = queue.Queue()
+        self.worker = None
+        self.current_paths = None
         self.live_window_s = 10.0
         self.live_t = deque(maxlen=5000)
-        self.live_force = deque(maxlen=5000)
         self.live_rpm = deque(maxlen=5000)
         self.live_power = deque(maxlen=5000)
-        self.live_duty = deque(maxlen=5000)
+        self._build_ui()
+        self.after(50, self._poll_queue)
+        self.after(100, self._update_plot)
 
     def _build_ui(self):
         frm = ttk.Frame(self, padding=10)
@@ -169,17 +169,17 @@ class App(tk.Tk):
         plotfrm.pack(fill="both", expand=False, pady=(0, 10))
 
         self.fig = Figure(figsize=(10, 3.6), dpi=100)
-        self.ax_force = self.fig.add_subplot(111)
-        self.ax_rpm = self.ax_force.twinx()
+        self.ax_rpm = self.fig.add_subplot(111)
+        self.ax_power = self.ax_rpm.twinx()
 
-        self.ax_force.set_title("Live Force / RPM")
-        self.ax_force.set_xlabel("Time (s)")
-        self.ax_force.set_ylabel("Force (N)")
+        self.ax_rpm.set_title("Live RPM / Power")
+        self.ax_rpm.set_xlabel("Time (s)")
         self.ax_rpm.set_ylabel("RPM")
-        self.ax_force.grid(True, alpha=0.3)
+        self.ax_power.set_ylabel("Power (W)")
+        self.ax_rpm.grid(True, alpha=0.3)
 
-        (self.force_line,) = self.ax_force.plot([], [])
         (self.rpm_line,) = self.ax_rpm.plot([], [])
+        (self.power_line,) = self.ax_power.plot([], [])
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=plotfrm)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -244,10 +244,17 @@ class App(tk.Tk):
         try:
             # NEW: clear live data buffers and plot
             self.live_t.clear()
-            self.live_force.clear()
             self.live_rpm.clear()
-            self.force_line.set_data([], [])
+            self.live_power.clear()
+
             self.rpm_line.set_data([], [])
+            self.power_line.set_data([], [])
+
+            self.ax_rpm.relim()
+            self.ax_rpm.autoscale_view()
+            self.ax_power.relim()
+            self.ax_power.autoscale_view()
+
             self.canvas.draw_idle()
             
             run_name = self.run_name_var.get()
@@ -280,8 +287,8 @@ class App(tk.Tk):
         try:
             if self.live_t:
                 t_vals = list(self.live_t)
-                force_vals = list(self.live_force)
                 rpm_vals = list(self.live_rpm)
+                power_vals = list(self.live_power)
 
                 t_max = t_vals[-1]
                 t_min = max(0.0, t_max - self.live_window_s)
@@ -293,32 +300,33 @@ class App(tk.Tk):
                         break
 
                 x = t_vals[idx0:]
-                y_force = force_vals[idx0:]
                 y_rpm = rpm_vals[idx0:]
+                y_power = power_vals[idx0:]
 
-                self.force_line.set_data(x, y_force)
                 self.rpm_line.set_data(x, y_rpm)
+                self.power_line.set_data(x, y_power)
 
-                self.ax_force.set_xlim(t_min, max(t_min + 0.1, t_max))
+                self.ax_rpm.set_xlim(t_min, max(t_min + 0.1, t_max))
 
-                if y_force:
-                    fmin = min(y_force)
-                    fmax = max(y_force)
-                    pad = max(0.1, (fmax - fmin) * 0.1 if fmax != fmin else 0.1)
-                    self.ax_force.set_ylim(fmin - pad, fmax + pad)
-
-                rpm_clean = [v for v in y_rpm if v == v]  # ignore NaN
+                rpm_clean = [v for v in y_rpm if v == v]
                 if rpm_clean:
                     rmin = min(rpm_clean)
                     rmax = max(rpm_clean)
                     pad = max(100.0, (rmax - rmin) * 0.1 if rmax != rmin else 100.0)
                     self.ax_rpm.set_ylim(rmin - pad, rmax + pad)
 
+                power_clean = [v for v in y_power if v == v]
+                if power_clean:
+                    pmin = min(power_clean)
+                    pmax = max(power_clean)
+                    pad = max(1.0, (pmax - pmin) * 0.1 if pmax != pmin else 1.0)
+                    self.ax_power.set_ylim(pmin - pad, pmax + pad)
+
                 self.canvas.draw_idle()
 
         finally:
             self.after(100, self._update_plot)
-
+        
     def _poll_queue(self):
         try:
             while True:
@@ -336,13 +344,13 @@ class App(tk.Tk):
                 # NEW: live sample update
                 elif msg_type == "sample":
                     t = payload.get("t")
-                    force = payload.get("force")
                     rpm = payload.get("rpm")
+                    power = payload.get("power")
 
-                    if t is not None and force is not None:
+                    if t is not None:
                         self.live_t.append(float(t))
-                        self.live_force.append(float(force))
                         self.live_rpm.append(float(rpm) if rpm is not None else float("nan"))
+                        self.live_power.append(float(power) if power is not None else float("nan"))
 
                 elif msg_type == "done":
                     self.status_var.set("Idle.")

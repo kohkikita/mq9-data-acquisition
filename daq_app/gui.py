@@ -178,8 +178,8 @@ class App(tk.Tk):
         self.ax_power.set_ylabel("Power (W)")
         self.ax_rpm.grid(True, alpha=0.3)
 
-        (self.rpm_line,) = self.ax_rpm.plot([], [])
-        (self.power_line,) = self.ax_power.plot([], [])
+        (self.rpm_line,) = self.ax_rpm.plot([], [], label="RPM", color="blue")
+        (self.power_line,) = self.ax_power.plot([], [], label="Power (W)", color="red")
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=plotfrm)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)

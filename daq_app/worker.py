@@ -146,6 +146,17 @@ class RunWorker(threading.Thread):
                         f"VESC rpm={rpm_display}"
                     ))
 
+                    self.gui_queue.put((
+                        "sample",
+                        {
+                            "t": t_elapsed,
+                            "force": force_N,
+                            "rpm": vesc_vals["vesc_rpm"],
+                            "power": vesc_vals["vesc_power_W"],
+                            "duty": vesc_vals["vesc_duty"],
+                        },
+                    ))
+
                     writer.writerow([
                         event_id,
                         now_iso,

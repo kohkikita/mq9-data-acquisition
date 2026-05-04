@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 numpy
 pandas
 scipy
@@ -6,6 +5,3 @@ pyserial
 sounddevice
 soundfile
 matplotlib
-=======
-numpy scipy pandas matplotlib sounddevice soundfile pyserial
->>>>>>> 16bcc163293e909428eeb10ce1569a8cb91ff406

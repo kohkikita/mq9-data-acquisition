@@ -1,83 +1,75 @@
-
-# STM32 Load Cell + Continuous Audio + VESC Control Logger
+# STM32 Load Cell + USB Mic + VESC Logger
 
 ## Overview
 
-This project implements a multi-modal data acquisition system for propeller and thrust stand testing.
+This project is a Python data acquisition application for propeller and thrust stand testing. It records synchronized force, audio, and optional VESC telemetry from the moment a run starts until the run is stopped.
 
-It synchronously captures:
+The current workflow is continuous logging. Pressing **Start Run** begins saving data immediately, and the run ends when the user presses **Stop Run** or when RPM plateau auto-stop triggers.
 
-- **Force (N)** from an STM32 load cell system over USB serial
-- **Audio** from a USB microphone
-- **VESC telemetry** (RPM, voltage, current, duty, MOSFET temperature, input power)
-- **Optional VESC motor control** with smooth ramping (Duty / RPM / Current modes)
+The application captures:
 
-All signals are time-aligned and post-processed automatically.
+- Force data from an STM32 load cell system over USB serial
+- Audio from a USB microphone
+- Optional VESC telemetry: RPM, voltage, current, duty, MOSFET temperature, and input power
+- Optional VESC motor control in `disabled`, `rpm`, `current`, or `duty` mode
 
-Unlike the earlier version of the software, this system is now **continuous-logging**, not event-triggered. Logging starts immediately when **Start Run** is pressed.
-
----
+After each run, the app automatically aligns the data streams and generates CSV, WAV, spectrogram, and overlay plot outputs.
 
 ## System Architecture
 
-```
-STM32 Load Cell  ── USB Serial ──┐
-                                 ├── Python GUI + DAQ Worker
-USB Microphone ── Audio Stream ──┤
-                                 └── VESC UART (optional)
-                                            │
-                                            ▼
-                              Continuous Logging + Live Telemetry
-                                            │
-                                            ▼
-                             RPM Plateau Detection / Manual Stop
-                                            │
-                                            ▼
-                              Post-Processing + Auto Outputs
-                                            │
-                                            ▼
-                             CSV + WAV + Spectrogram + Overlays
-```
+```text
+STM32 Load Cell -- USB Serial --+
+                                |
+USB Microphone -- Audio Stream -+--> Python GUI + DAQ Worker
+                                |
+VESC UART ------ Optional ------+
 
-If VESC is enabled:
-
+Python GUI + DAQ Worker
+        |
+        +--> Continuous logging
+        +--> Optional VESC command ramp
+        +--> Manual stop or RPM plateau auto-stop
+        +--> Post-processing
+        +--> CSV + WAV + spectrogram + overlay plots
 ```
-Python → VESC UART (Command Streaming + Telemetry Polling)
-```
-
----
 
 ## Major Features
 
 ### Continuous Logging
 
-The application now logs continuously from the moment **Start Run** is pressed.
+Logging starts as soon as **Start Run** is pressed. All valid force samples, audio, and available VESC telemetry are saved for the full run.
 
-Behavior:
+The run stops when:
 
-- Logging begins immediately when the run starts
-- Force, audio, and VESC telemetry are recorded together during the full run
-- The run stops when:
-  - the user presses **Stop Run**, or
-  - the software detects that **VESC RPM has plateaued**
+- The user presses **Stop Run**
+- RPM plateau detection decides the motor speed has stopped meaningfully increasing
 
-This matches the newer workflow where the ESC is controlled directly inside the DAQ app.
+Internally, the saved run is still represented with `event_id = 1` so the existing post-processing code can reuse the older event-alignment path. Some output filenames still include `event_aligned`, but they now describe the full saved run rather than a force-triggered event.
 
----
+### GUI
+
+The GUI provides:
+
+- Dark red/black theme
+- Start/stop controls and run name entry
+- Status indicator with state color
+- Ramp progress bar for VESC ramping
+- RPM plateau auto-stop checkbox
+- Responsive VESC and DAQ settings panels
+- Live RPM and power plot with project logo watermark
+- Compact live log capped to about six visible lines
 
 ### Audio Capture
 
-- A temporary **FULL WAV** is recorded during the run
-- After run completion:
-  - The recorded run audio is saved as the final WAV output
-  - Spectrogram and audio RMS are computed automatically
-  - Temporary files are deleted automatically
+A temporary full-run WAV is recorded while the run is active. During post-processing, the final run WAV is written, audio RMS is calculated, and spectrogram outputs are generated.
 
----
+Temporary audio and raw CSV files are removed automatically after post-processing completes.
 
-### VESC Telemetry (Optional)
+### VESC Telemetry and Control
 
-If enabled, the system logs:
+When VESC support is enabled, the system can poll telemetry and stream motor commands at configurable rates.
+
+Logged telemetry fields include:
 
 - `vesc_rpm`
 - `vesc_v_in_V`
@@ -87,178 +79,148 @@ If enabled, the system logs:
 - `vesc_temp_mos_C`
 - `vesc_power_W`
 
-Telemetry is decoded using native VESC packet framing with CRC validation.
-
----
-
-### VESC Command Modes
-
-Supported modes:
+Supported command modes:
 
 - `disabled`
 - `rpm`
 - `current`
 - `duty`
 
-Duty mode includes:
-
-- Smooth ramp up/down
-- Optional hold at final duty
-- Optional timed hold
-- Sensorless startup assist ("kick")
-- Minimum startup duty
-- Automatic disarm
-
-Ramp rates and behavior are configurable via GUI.
-
----
+Duty mode supports smooth ramping, optional final-duty hold, sensorless startup assist, minimum startup duty, and automatic disarm behavior.
 
 ### RPM Plateau Auto-Stop
 
-The system can automatically stop the run when motor RPM appears to have reached its practical limit.
+RPM plateau auto-stop is used to end a run automatically when RPM stops increasing meaningfully.
 
-Behavior:
+The logic:
 
-- RPM monitoring arms only after RPM exceeds a minimum threshold
-- The software tracks the highest RPM reached so far
-- If RPM does not meaningfully exceed that peak for a configured time window, the run automatically stops
+- Waits until smoothed RPM exceeds `RPM_PLATEAU_MIN_RPM`
+- Requires duty to exceed `RPM_PLATEAU_MIN_DUTY`
+- Tracks the highest RPM reached so far
+- Stops the run if RPM does not exceed the previous peak by `RPM_PLATEAU_EPS_RPM` for `RPM_PLATEAU_HOLD_S`
 
-Typical parameters:
+If VESC telemetry is unavailable and `RPM_PLATEAU_REQUIRE_VESC` is enabled, plateau auto-stop will not trigger.
 
-- `RPM_PLATEAU_MIN_RPM`
-- `RPM_PLATEAU_EPS_RPM`
-- `RPM_PLATEAU_HOLD_S`
-- `RPM_PLATEAU_MIN_DUTY`
+## Outputs
 
----
+Each run writes files to `runs/` using the run name and timestamp.
 
-## Post-Processing Outputs
+```text
+runs/
+|-- runname_TIMESTAMP.wav
+|-- runname_TIMESTAMP_combined_event_aligned.csv
+|-- runname_TIMESTAMP_audio_spectrogram.csv
+|-- runname_TIMESTAMP_audio_spectrogram.png
+|-- runname_TIMESTAMP_overlay_force_audio_rpm_power_duty.png
+|-- runname_TIMESTAMP_overlay_force_audio_rpm.png
+`-- runname_TIMESTAMP_overlay_force_audio_power.png
+```
 
-After each run, the system automatically generates:
-
-### Primary Data Files
+Primary outputs:
 
 | File | Description |
 |---|---|
-| `*_combined_event_aligned.csv` | Force + audio RMS + interpolated VESC values |
-| `*.wav` | Run audio |
+| `*.wav` | Final run audio |
+| `*_combined_event_aligned.csv` | Full-run force, audio RMS, and interpolated VESC data. The filename is legacy. |
 | `*_audio_spectrogram.csv` | Spectrogram data |
 | `*_audio_spectrogram.png` | Spectrogram plot |
+| `*_overlay_force_audio_rpm_power_duty.png` | Force, audio RMS, RPM, power, and duty overlay |
+| `*_overlay_force_audio_rpm.png` | Force, audio RMS, and RPM overlay |
+| `*_overlay_force_audio_power.png` | Force, audio RMS, and power overlay |
 
-### Overlay Plots
-
-Automatically generated:
-
-- Force + Audio + RPM + Power + Duty
-- Force + Audio + RPM
-- Force + Audio + Power
-
----
-
-## Output Directory Structure
-
-```
-runs/
-├── runname_TIMESTAMP.wav
-├── runname_TIMESTAMP_combined_event_aligned.csv
-├── runname_TIMESTAMP_audio_spectrogram.csv
-├── runname_TIMESTAMP_audio_spectrogram.png
-├── runname_TIMESTAMP_overlay_force_audio_rpm_power_duty.png
-├── runname_TIMESTAMP_overlay_force_audio_rpm.png
-└── runname_TIMESTAMP_overlay_force_audio_power.png
-```
-
-Temporary files removed automatically:
+Temporary files removed after post-processing:
 
 - `_TEMP_RAW.csv`
 - `_FULL.wav`
 
----
-
 ## GUI Usage
 
-1. Connect STM32
-2. Connect USB microphone
-3. (Optional) Connect VESC
-4. Run:
+1. Connect the STM32 load cell system.
+2. Connect the USB microphone.
+3. Optionally connect the VESC.
+4. Run the app:
 
-```
+```bash
 python main.py
 ```
 
-5. Enter a run name
-6. Configure VESC settings if needed
-7. Press **Start Run**
-8. Apply throttle or allow ramp
-9. Run stops when:
-   - you press **Stop Run**, or
-   - RPM plateau detection triggers
-
-Outputs are saved in `/runs`.
-
----
+5. Enter a run name.
+6. Configure VESC settings if needed.
+7. Press **Start Run**.
+8. Let the run complete, or press **Stop Run**.
+9. Review generated outputs in `runs/`.
 
 ## Configuration
 
-Main parameters are located in:
+Main settings are in `daq_app/config.py`.
 
-```
-daq_app/config.py
-```
+Common DAQ settings:
 
-Examples:
-
-```
+```python
 BAUD
 SERIAL_TIMEOUT_S
 FORCE_SCALE
 AUDIO_FS
+AUDIO_CHANNELS
 RMS_WINDOW_S
-VESC_POLL_HZ
-VESC_CMD_HZ
-RPM_PLATEAU_MIN_RPM
-RPM_PLATEAU_HOLD_S
+RUNS_DIR
 ```
 
----
+VESC settings:
+
+```python
+VESC_DEFAULT_ENABLED
+VESC_DEFAULT_BAUD
+VESC_MODES
+VESC_POLL_HZ
+VESC_CMD_HZ
+VESC_DEFAULT_MODE
+VESC_DEFAULT_SETPOINT
+VESC_DEFAULT_RAMP_DUTY_PER_S
+VESC_DEFAULT_RAMP_RPM_PER_S
+VESC_DEFAULT_HOLD_TIME
+VESC_DEFAULT_RAMP_ENABLE
+VESC_DEFAULT_HOLD_FINAL
+```
+
+RPM plateau settings:
+
+```python
+RPM_PLATEAU_AUTOSTOP_ENABLE
+RPM_PLATEAU_MIN_RPM
+RPM_PLATEAU_EPS_RPM
+RPM_PLATEAU_HOLD_S
+RPM_PLATEAU_MIN_DUTY
+RPM_PLATEAU_REQUIRE_VESC
+RPM_PLATEAU_SMOOTH_SAMPLES
+```
+
+The STM32 serial parser expects load-cell lines in this general form:
+
+```text
+Load=0.123 N, t=4567 ms
+```
 
 ## Dependencies
 
-Python 3.10+
+Python 3.10+ is recommended.
 
-Required packages:
+Install Python package dependencies:
 
-```
-numpy
-scipy
-pandas
-matplotlib
-sounddevice
-soundfile
-pyserial
-tkinter
+```bash
+pip install -r requirements.txt
 ```
 
-Install:
-
-```
-pip install numpy scipy pandas matplotlib sounddevice soundfile pyserial
-```
-
----
+`tkinter` is used for the GUI and ships with most Windows Python installs. On some Linux distributions, it may need to be installed through the system package manager.
 
 ## Known Limitations
 
-- dBFS is not calibrated SPL
-- Microphone placement must remain fixed between runs
-- Spectrogram frequency range limited by microphone response
-- RPM plateau detection is heuristic
-- If VESC telemetry is unavailable, RPM auto-stop will not trigger
-
----
+- Audio dBFS values are not calibrated SPL.
+- Microphone placement must remain fixed between runs for meaningful acoustic comparisons.
+- Spectrogram frequency range depends on the microphone and sample rate.
+- RPM plateau detection is heuristic and depends on valid VESC telemetry.
+- The post-processing path still uses legacy `event` names even though the current run data is continuous.
 
 ## Author Notes
 
-This system was designed for **repeatable propeller testing with synchronized mechanical and acoustic data**.
-
-Continuous logging combined with RPM plateau detection allows clean automated runs while keeping the workflow simple.
+This system is designed for repeatable propeller testing with synchronized mechanical, acoustic, and motor telemetry data. Continuous logging keeps the test workflow simple, while RPM plateau auto-stop allows automated run completion when VESC telemetry is available.

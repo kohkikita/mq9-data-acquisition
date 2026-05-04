@@ -42,12 +42,20 @@ class RunPaths:
 
 
 class RunWorker(threading.Thread):
-    def __init__(self, gui_queue: queue.Queue, paths, mic_device=None, vesc_cfg: VESCConfig | None = None):
+    def __init__(
+        self,
+        gui_queue: queue.Queue,
+        paths,
+        mic_device=None,
+        vesc_cfg: VESCConfig | None = None,
+        rpm_plateau_autostop: bool = RPM_PLATEAU_AUTOSTOP_ENABLE,
+    ):
         super().__init__(daemon=True)
         self.gui_queue = gui_queue
         self.paths = paths
         self.mic_device = mic_device
         self.vesc_cfg = vesc_cfg
+        self.rpm_plateau_autostop = rpm_plateau_autostop
         self._stop_req = threading.Event()
 
     def request_stop(self):
@@ -175,7 +183,7 @@ class RunWorker(threading.Thread):
                     f.flush()
 
                     # ---------------- RPM plateau auto-stop ----------------
-                    if RPM_PLATEAU_AUTOSTOP_ENABLE:
+                    if self.rpm_plateau_autostop:
                         rpm_raw = float(vesc_vals["vesc_rpm"]) if np.isfinite(vesc_vals["vesc_rpm"]) else np.nan
                         duty = float(vesc_vals["vesc_duty"]) if np.isfinite(vesc_vals["vesc_duty"]) else np.nan
 

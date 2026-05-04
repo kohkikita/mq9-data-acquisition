@@ -5,6 +5,7 @@ import matplotlib.image as mpimg
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from dataclasses import dataclass
+import math
 import queue
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -72,7 +73,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("STM32 Load Cell + USB Mic Logger + VESC")
+        self.title("PropOps DAQ GUI")
         self.geometry("1020x780")
         self.minsize(980, 720)
 
@@ -141,11 +142,29 @@ class App(tk.Tk):
             foreground=self.colors["muted"],
         )
         style.configure(
+            "Field.TLabel",
+            background=self.colors["bg"],
+            foreground=self.colors["muted"],
+            font=("Segoe UI", 8),
+        )
+        style.configure(
             "Status.TLabel",
             background=self.colors["panel"],
             foreground=self.colors["text"],
             font=("Segoe UI Semibold", 10),
             padding=(10, 7),
+        )
+        style.configure(
+            "MetricTitle.TLabel",
+            background=self.colors["panel"],
+            foreground=self.colors["muted"],
+            font=("Segoe UI", 8),
+        )
+        style.configure(
+            "MetricValue.TLabel",
+            background=self.colors["panel"],
+            foreground=self.colors["text"],
+            font=("Segoe UI Semibold", 10),
         )
 
         style.configure(
@@ -245,32 +264,54 @@ class App(tk.Tk):
         top = ttk.Frame(frm, style="Panel.TFrame", padding=10)
         top.pack(fill="x", pady=(0, 10))
 
-        self.status_dot = tk.Canvas(top, width=14, height=14, bg=self.colors["panel"], highlightthickness=0)
-        self.status_dot.pack(side="left", padx=(0, 8))
-        self.status_dot_id = self.status_dot.create_oval(3, 3, 11, 11, fill=self.colors["idle"], outline="")
-
         self.status_var = tk.StringVar(value="Idle.")
-        ttk.Label(top, textvariable=self.status_var, style="Status.TLabel").pack(side="left", padx=(0, 16))
-
-        rampfrm = ttk.Frame(top, style="Panel.TFrame")
-        rampfrm.pack(side="left", fill="x", expand=True, padx=(0, 16))
-        self.ramp_label_var = tk.StringVar(value="Ramp: --")
-        ttk.Label(rampfrm, textvariable=self.ramp_label_var, style="Status.TLabel").pack(side="left", padx=(0, 8))
-        self.ramp_progress_var = tk.DoubleVar(value=0.0)
-        self.ramp_progress = ttk.Progressbar(
-            rampfrm,
-            variable=self.ramp_progress_var,
-            maximum=100.0,
-            length=260,
-            mode="determinate",
-        )
-        self.ramp_progress.pack(side="left", fill="x", expand=True)
+        self.elapsed_var = tk.StringVar(value="--")
+        self.force_var = tk.StringVar(value="--")
+        self.rpm_var = tk.StringVar(value="--")
+        self.power_var = tk.StringVar(value="--")
+        self.duty_var = tk.StringVar(value="--")
 
         self.start_btn = ttk.Button(top, text="Start Run", command=self.start_run, style="Accent.TButton")
         self.start_btn.pack(side="right", padx=(5, 0))
 
         self.stop_btn = ttk.Button(top, text="Stop Run", command=self.stop_run, state="disabled")
         self.stop_btn.pack(side="right", padx=(5, 0))
+
+        metrics = ttk.Frame(top, style="Panel.TFrame")
+        metrics.pack(side="left", fill="x", expand=True, padx=(0, 16))
+
+        status_metric = ttk.Frame(metrics, style="Panel.TFrame")
+        status_metric.pack(side="left", padx=(0, 18))
+        ttk.Label(status_metric, text="Status", style="MetricTitle.TLabel").pack(anchor="w")
+        status_row = ttk.Frame(status_metric, style="Panel.TFrame")
+        status_row.pack(anchor="w")
+        self.status_dot = tk.Canvas(status_row, width=12, height=12, bg=self.colors["panel"], highlightthickness=0)
+        self.status_dot.pack(side="left", padx=(0, 6))
+        self.status_dot_id = self.status_dot.create_oval(3, 3, 9, 9, fill=self.colors["idle"], outline="")
+        ttk.Label(status_row, textvariable=self.status_var, style="MetricValue.TLabel", width=24).pack(side="left")
+
+        self._make_metric(metrics, "Elapsed", self.elapsed_var, 9)
+        self._make_metric(metrics, "Force", self.force_var, 10)
+        self._make_metric(metrics, "RPM", self.rpm_var, 10)
+        self._make_metric(metrics, "Power", self.power_var, 10)
+        self._make_metric(metrics, "Duty", self.duty_var, 8)
+
+        rampfrm = ttk.Frame(metrics, style="Panel.TFrame")
+        rampfrm.pack(side="left", fill="x", expand=True, padx=(0, 0))
+        ttk.Label(rampfrm, text="Ramp", style="MetricTitle.TLabel").pack(anchor="w")
+        ramp_row = ttk.Frame(rampfrm, style="Panel.TFrame")
+        ramp_row.pack(fill="x", expand=True)
+        self.ramp_label_var = tk.StringVar(value="--")
+        ttk.Label(ramp_row, textvariable=self.ramp_label_var, style="MetricValue.TLabel", width=6).pack(side="left", padx=(0, 8))
+        self.ramp_progress_var = tk.DoubleVar(value=0.0)
+        self.ramp_progress = ttk.Progressbar(
+            ramp_row,
+            variable=self.ramp_progress_var,
+            maximum=100.0,
+            length=150,
+            mode="determinate",
+        )
+        self.ramp_progress.pack(side="left", fill="x", expand=True)
 
         runfrm = ttk.Frame(frm, padding=(0, 2, 0, 2))
         runfrm.pack(fill="x", pady=(0, 10))
@@ -288,29 +329,33 @@ class App(tk.Tk):
         self.vesc_enabled_var = tk.BooleanVar(value=VESC_DEFAULT_ENABLED)
         self.vesc_enable_check = ttk.Checkbutton(vfrm, text="Enable VESC", variable=self.vesc_enabled_var)
 
-        self.vesc_port_label = ttk.Label(vfrm, text="Port (blank=auto):")
+        self.vesc_connection_label = ttk.Label(vfrm, text="Connection", style="Muted.TLabel")
+        self.vesc_command_label = ttk.Label(vfrm, text="Command", style="Muted.TLabel")
+        self.vesc_ramp_label = ttk.Label(vfrm, text="Ramp", style="Muted.TLabel")
+
+        self.vesc_port_label = ttk.Label(vfrm, text="Port (blank=auto)", style="Field.TLabel")
         self.vesc_port_var = tk.StringVar(value="")
         self.vesc_port_entry = ttk.Entry(vfrm, textvariable=self.vesc_port_var, width=self.VESC_FIELD_WIDTH)
 
-        self.vesc_baud_label = ttk.Label(vfrm, text="Baud:")
+        self.vesc_baud_label = ttk.Label(vfrm, text="Baud", style="Field.TLabel")
         self.vesc_baud_var = tk.StringVar(value=str(VESC_DEFAULT_BAUD))
         self.vesc_baud_entry = ttk.Entry(vfrm, textvariable=self.vesc_baud_var, width=self.VESC_FIELD_WIDTH)
 
-        self.vesc_mode_label = ttk.Label(vfrm, text="Mode:")
+        self.vesc_mode_label = ttk.Label(vfrm, text="Mode", style="Field.TLabel")
         self.vesc_mode_var = tk.StringVar(value=VESC_DEFAULT_MODE)  # default now duty
         self.vesc_mode_combo = ttk.Combobox(vfrm, textvariable=self.vesc_mode_var, values=VESC_MODES, width=self.VESC_COMBO_WIDTH, state="readonly")
 
-        self.vesc_setpoint_label = ttk.Label(vfrm, text="Setpoint:")
+        self.vesc_setpoint_label = ttk.Label(vfrm, text="Setpoint", style="Field.TLabel")
         self.vesc_setpoint_var = tk.StringVar(value=VESC_DEFAULT_SETPOINT)  # default setpoint
         self.vesc_setpoint_entry = ttk.Entry(vfrm, textvariable=self.vesc_setpoint_var, width=self.VESC_FIELD_WIDTH)
-        self.vesc_units_label = ttk.Label(vfrm, text="(rpm / A / duty 0-1)")
+        self.vesc_units_label = ttk.Label(vfrm, text="rpm / A / duty 0-1", style="Field.TLabel")
 
         # --- Ramp controls ---
-        self.vesc_ramp_rpm_label = ttk.Label(vfrm, text="Ramp RPM/s:")
+        self.vesc_ramp_rpm_label = ttk.Label(vfrm, text="Ramp RPM/s", style="Field.TLabel")
         self.vesc_ramp_rpm_var = tk.StringVar(value=VESC_DEFAULT_RAMP_RPM_PER_S)
         self.vesc_ramp_rpm_entry = ttk.Entry(vfrm, textvariable=self.vesc_ramp_rpm_var, width=self.VESC_FIELD_WIDTH)
 
-        self.vesc_ramp_duty_label = ttk.Label(vfrm, text="Ramp duty/s:")
+        self.vesc_ramp_duty_label = ttk.Label(vfrm, text="Ramp duty/s", style="Field.TLabel")
         self.vesc_ramp_duty_var = tk.StringVar(value=VESC_DEFAULT_RAMP_DUTY_PER_S)  # default ramp duty/s
         self.vesc_ramp_duty_entry = ttk.Entry(vfrm, textvariable=self.vesc_ramp_duty_var, width=self.VESC_FIELD_WIDTH)
 
@@ -318,11 +363,18 @@ class App(tk.Tk):
         self.vesc_ramp_enable_check = ttk.Checkbutton(vfrm, text="Enable ramp", variable=self.vesc_ramp_enable_var)
 
         self.vesc_hold_final_var = tk.BooleanVar(value=VESC_DEFAULT_HOLD_FINAL)
-        self.vesc_hold_final_check = ttk.Checkbutton(vfrm, text="Hold final duty", variable=self.vesc_hold_final_var)
+        self.vesc_hold_final_check = ttk.Checkbutton(vfrm, text="Hold final after ramp", variable=self.vesc_hold_final_var)
 
         # settings summary
         self.params_frame = ttk.LabelFrame(self.settings_container, text="DAQ Settings", padding=12)
         params = self.params_frame
+
+        self.rpm_autostop_var = tk.BooleanVar(value=RPM_PLATEAU_AUTOSTOP_ENABLE)
+        self.rpm_autostop_check = ttk.Checkbutton(
+            params,
+            text="Enable RPM plateau auto-stop",
+            variable=self.rpm_autostop_var,
+        )
 
         param_texts = (
             "Logging: Start Run to Stop/RPM plateau",
@@ -331,7 +383,6 @@ class App(tk.Tk):
             f"Force scale: {FORCE_SCALE}",
             f"VESC poll: {VESC_POLL_HZ} Hz",
             f"VESC command: {VESC_CMD_HZ} Hz",
-            f"RPM plateau: {'ON' if RPM_PLATEAU_AUTOSTOP_ENABLE else 'OFF'}",
             f"Plateau min RPM: {RPM_PLATEAU_MIN_RPM}",
             f"Plateau hold: {RPM_PLATEAU_HOLD_S} s",
             f"Output dir: {RUNS_DIR}/",
@@ -420,6 +471,13 @@ class App(tk.Tk):
         yscroll.pack(side="right", fill="y")
         self.text.configure(yscrollcommand=yscroll.set)
 
+    def _make_metric(self, parent, title: str, variable: tk.StringVar, width: int):
+        metric = ttk.Frame(parent, style="Panel.TFrame")
+        metric.pack(side="left", padx=(0, 18))
+        ttk.Label(metric, text=title, style="MetricTitle.TLabel").pack(anchor="w")
+        ttk.Label(metric, textvariable=variable, style="MetricValue.TLabel", width=width).pack(anchor="w")
+        return metric
+
     def _on_resize(self, event):
         if event.widget is self:
             self._layout_settings()
@@ -470,6 +528,9 @@ class App(tk.Tk):
 
     def _layout_vesc_fields(self, compact: bool):
         widgets = (
+            self.vesc_connection_label,
+            self.vesc_command_label,
+            self.vesc_ramp_label,
             self.vesc_enable_check,
             self.vesc_port_label,
             self.vesc_port_entry,
@@ -494,53 +555,76 @@ class App(tk.Tk):
             self.vesc_frame.columnconfigure(col, weight=0)
 
         if compact:
-            self.vesc_setpoint_label.configure(text="Setpoint (rpm / A / duty 0-1):")
+            self.vesc_setpoint_label.configure(text="Setpoint")
             self.vesc_frame.columnconfigure(0, weight=0)
             self.vesc_frame.columnconfigure(1, weight=0)
-            rows = (
-                (self.vesc_port_label, self.vesc_port_entry),
-                (self.vesc_baud_label, self.vesc_baud_entry),
-                (self.vesc_mode_label, self.vesc_mode_combo),
-                (self.vesc_setpoint_label, self.vesc_setpoint_entry),
-                (self.vesc_ramp_rpm_label, self.vesc_ramp_rpm_entry),
-                (self.vesc_ramp_duty_label, self.vesc_ramp_duty_entry),
-            )
 
-            self.vesc_enable_check.grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=2)
-            for row, (label, field) in enumerate(rows, start=1):
-                label.grid(row=row, column=0, sticky="w", padx=6, pady=2)
-                field.grid(row=row, column=1, sticky="w", padx=6, pady=2)
+            self.vesc_connection_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 4))
+            self.vesc_enable_check.grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=2)
 
-            self.vesc_ramp_enable_check.grid(row=7, column=1, sticky="w", padx=6, pady=2)
-            self.vesc_hold_final_check.grid(row=8, column=1, sticky="w", padx=6, pady=2)
+            self.vesc_port_label.grid(row=2, column=0, sticky="w", padx=6, pady=(6, 0))
+            self.vesc_baud_label.grid(row=2, column=1, sticky="w", padx=6, pady=(6, 0))
+            self.vesc_port_entry.grid(row=3, column=0, sticky="w", padx=6, pady=(0, 4))
+            self.vesc_baud_entry.grid(row=3, column=1, sticky="w", padx=6, pady=(0, 4))
+
+            self.vesc_command_label.grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 4))
+            self.vesc_mode_label.grid(row=5, column=0, sticky="w", padx=6, pady=(6, 0))
+            self.vesc_setpoint_label.grid(row=5, column=1, sticky="w", padx=6, pady=(6, 0))
+            self.vesc_mode_combo.grid(row=6, column=0, sticky="w", padx=6, pady=(0, 4))
+            self.vesc_setpoint_entry.grid(row=6, column=1, sticky="w", padx=6, pady=(0, 4))
+            self.vesc_units_label.grid(row=7, column=1, sticky="w", padx=6, pady=(0, 2))
+
+            self.vesc_ramp_label.grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 4))
+            self.vesc_ramp_enable_check.grid(row=9, column=0, sticky="w", padx=6, pady=2)
+            self.vesc_hold_final_check.grid(row=9, column=1, sticky="w", padx=6, pady=2)
+            self.vesc_ramp_rpm_label.grid(row=10, column=0, sticky="w", padx=6, pady=(6, 0))
+            self.vesc_ramp_duty_label.grid(row=10, column=1, sticky="w", padx=6, pady=(6, 0))
+            self.vesc_ramp_rpm_entry.grid(row=11, column=0, sticky="w", padx=6, pady=(0, 4))
+            self.vesc_ramp_duty_entry.grid(row=11, column=1, sticky="w", padx=6, pady=(0, 4))
             return
 
-        self.vesc_setpoint_label.configure(text="Setpoint:")
-        self.vesc_enable_check.grid(row=0, column=0, sticky="w", padx=6, pady=2)
-        self.vesc_port_label.grid(row=0, column=1, sticky="w", padx=6, pady=2)
-        self.vesc_port_entry.grid(row=0, column=2, sticky="w", padx=6, pady=2)
-        self.vesc_baud_label.grid(row=0, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_baud_entry.grid(row=0, column=4, sticky="w", padx=6, pady=2)
-        self.vesc_mode_label.grid(row=1, column=1, sticky="w", padx=6, pady=2)
-        self.vesc_mode_combo.grid(row=1, column=2, sticky="w", padx=6, pady=2)
-        self.vesc_setpoint_label.grid(row=1, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_setpoint_entry.grid(row=1, column=4, sticky="w", padx=6, pady=2)
-        self.vesc_units_label.grid(row=1, column=5, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_rpm_label.grid(row=2, column=1, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_rpm_entry.grid(row=2, column=2, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_duty_label.grid(row=2, column=3, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_duty_entry.grid(row=2, column=4, sticky="w", padx=6, pady=2)
-        self.vesc_ramp_enable_check.grid(row=2, column=5, sticky="w", padx=6, pady=2)
-        self.vesc_hold_final_check.grid(row=3, column=5, sticky="w", padx=6, pady=2)
+        self.vesc_setpoint_label.configure(text="Setpoint")
+        self.vesc_connection_label.grid(row=0, column=0, sticky="w", padx=6, pady=(2, 0))
+        self.vesc_enable_check.grid(row=1, column=0, sticky="w", padx=6, pady=(0, 6))
+        self.vesc_port_label.grid(row=0, column=1, sticky="w", padx=6, pady=(2, 0))
+        self.vesc_port_entry.grid(row=1, column=1, sticky="w", padx=6, pady=(0, 6))
+        self.vesc_baud_label.grid(row=0, column=2, sticky="w", padx=6, pady=(2, 0))
+        self.vesc_baud_entry.grid(row=1, column=2, sticky="w", padx=6, pady=(0, 6))
+
+        self.vesc_command_label.grid(row=2, column=0, sticky="w", padx=6, pady=(8, 0))
+        self.vesc_mode_label.grid(row=2, column=1, sticky="w", padx=6, pady=(8, 0))
+        self.vesc_mode_combo.grid(row=3, column=1, sticky="w", padx=6, pady=(0, 6))
+        self.vesc_setpoint_label.grid(row=2, column=2, sticky="w", padx=6, pady=(8, 0))
+        self.vesc_setpoint_entry.grid(row=3, column=2, sticky="w", padx=6, pady=(0, 6))
+        self.vesc_units_label.grid(row=3, column=3, sticky="w", padx=6, pady=(0, 6))
+
+        self.vesc_ramp_label.grid(row=4, column=0, sticky="w", padx=6, pady=(8, 0))
+        self.vesc_ramp_enable_check.grid(row=5, column=0, sticky="w", padx=6, pady=(0, 2))
+        self.vesc_ramp_rpm_label.grid(row=4, column=1, sticky="w", padx=6, pady=(8, 0))
+        self.vesc_ramp_rpm_entry.grid(row=5, column=1, sticky="w", padx=6, pady=(0, 2))
+        self.vesc_ramp_duty_label.grid(row=4, column=2, sticky="w", padx=6, pady=(8, 0))
+        self.vesc_ramp_duty_entry.grid(row=5, column=2, sticky="w", padx=6, pady=(0, 2))
+        self.vesc_hold_final_check.grid(row=5, column=3, sticky="w", padx=6, pady=(0, 2))
 
     def _layout_param_fields(self, columns: int):
+        self.rpm_autostop_check.grid_forget()
         for label in self.param_labels:
             label.grid_forget()
 
         for col in range(3):
             self.params_frame.columnconfigure(col, weight=0)
 
+        self.rpm_autostop_check.grid(
+            row=0,
+            column=0,
+            columnspan=columns,
+            sticky="w",
+            padx=6,
+            pady=(0, 6),
+        )
+
         for index, label in enumerate(self.param_labels):
+            index += columns
             row = index // columns
             col = index % columns
             self.params_frame.columnconfigure(col, weight=1)
@@ -600,6 +684,7 @@ class App(tk.Tk):
             self.live_duty.clear()
             self._set_status_state("warning")
             self._set_ramp_progress(None)
+            self._reset_live_metrics()
 
             self.rpm_line.set_data([], [])
             self.power_line.set_data([], [])
@@ -619,7 +704,13 @@ class App(tk.Tk):
             self.text.see("end")
 
             vcfg = self._build_vesc_cfg()
-            self.worker = RunWorker(self.gui_queue, self.current_paths, mic_device=None, vesc_cfg=vcfg)
+            self.worker = RunWorker(
+                self.gui_queue,
+                self.current_paths,
+                mic_device=None,
+                vesc_cfg=vcfg,
+                rpm_plateau_autostop=bool(self.rpm_autostop_var.get()),
+            )
             self.worker.start()
 
             self.start_btn.configure(state="disabled")
@@ -699,6 +790,7 @@ class App(tk.Tk):
                 # NEW: live sample update
                 elif msg_type == "sample":
                     t = payload.get("t")
+                    force = payload.get("force")
                     rpm = payload.get("rpm")
                     power = payload.get("power")
                     duty = payload.get("duty")
@@ -708,6 +800,7 @@ class App(tk.Tk):
                         self.live_rpm.append(float(rpm) if rpm is not None else float("nan"))
                         self.live_power.append(float(power) if power is not None else float("nan"))
                         self.live_duty.append(float(duty) if duty is not None else float("nan"))
+                        self._update_live_metrics(t, force, rpm, power, duty)
                         self._update_ramp_progress(rpm, duty)
 
                 elif msg_type == "done":
@@ -756,14 +849,37 @@ class App(tk.Tk):
         else:
             self._set_status_state("warning")
 
+    def _reset_live_metrics(self):
+        self.elapsed_var.set("--")
+        self.force_var.set("--")
+        self.rpm_var.set("--")
+        self.power_var.set("--")
+        self.duty_var.set("--")
+
+    def _format_metric(self, value, suffix: str, digits: int = 1) -> str:
+        try:
+            value = float(value)
+        except Exception:
+            return "--"
+        if not math.isfinite(value):
+            return "--"
+        return f"{value:.{digits}f}{suffix}"
+
+    def _update_live_metrics(self, elapsed, force, rpm, power, duty):
+        self.elapsed_var.set(self._format_metric(elapsed, " s", 1))
+        self.force_var.set(self._format_metric(force, " N", 2))
+        self.rpm_var.set(self._format_metric(rpm, "", 0))
+        self.power_var.set(self._format_metric(power, " W", 1))
+        self.duty_var.set(self._format_metric(duty, "", 3))
+
     def _set_ramp_progress(self, pct: float | None, label: str = "Ramp"):
         if pct is None:
             self.ramp_progress_var.set(0.0)
-            self.ramp_label_var.set(f"{label}: --")
+            self.ramp_label_var.set("--")
             return
         pct = max(0.0, min(100.0, float(pct)))
         self.ramp_progress_var.set(pct)
-        self.ramp_label_var.set(f"{label}: {pct:4.0f}%")
+        self.ramp_label_var.set(f"{pct:3.0f}%")
 
     def _update_ramp_progress(self, rpm, duty):
         if not bool(self.vesc_enabled_var.get()):

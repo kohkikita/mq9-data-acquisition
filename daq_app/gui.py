@@ -87,6 +87,7 @@ class App(tk.Tk):
         self.live_t = deque(maxlen=5000)
         self.live_rpm = deque(maxlen=5000)
         self.live_power = deque(maxlen=5000)
+        self.live_duty = deque(maxlen=5000)
         self.settings_side_by_side = None
         self.vesc_compact_layout = None
         self.params_columns = None
@@ -110,6 +111,11 @@ class App(tk.Tk):
             "entry": "#0d0f13",
             "plot": "#0b0d10",
             "grid": "#343944",
+            "idle": "#74777f",
+            "error": "#ef4444",
+            "warning": "#f59e0b",
+            "running": "#22c55e",
+            "processing": "#38bdf8",
         }
 
         self.configure(bg=self.colors["bg"])
@@ -223,6 +229,14 @@ class App(tk.Tk):
             selectbackground=[("readonly", self.colors["red_dark"])],
             selectforeground=[("readonly", "#ffffff")],
         )
+        style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor=self.colors["entry"],
+            background=self.colors["red"],
+            bordercolor=self.colors["border"],
+            lightcolor=self.colors["red"],
+            darkcolor=self.colors["red_dark"],
+        )
 
     def _build_ui(self):
         frm = ttk.Frame(self, padding=14)
@@ -231,8 +245,26 @@ class App(tk.Tk):
         top = ttk.Frame(frm, style="Panel.TFrame", padding=10)
         top.pack(fill="x", pady=(0, 10))
 
+        self.status_dot = tk.Canvas(top, width=14, height=14, bg=self.colors["panel"], highlightthickness=0)
+        self.status_dot.pack(side="left", padx=(0, 8))
+        self.status_dot_id = self.status_dot.create_oval(3, 3, 11, 11, fill=self.colors["idle"], outline="")
+
         self.status_var = tk.StringVar(value="Idle.")
-        ttk.Label(top, textvariable=self.status_var, style="Status.TLabel").pack(side="left", fill="x", expand=True)
+        ttk.Label(top, textvariable=self.status_var, style="Status.TLabel").pack(side="left", padx=(0, 16))
+
+        rampfrm = ttk.Frame(top, style="Panel.TFrame")
+        rampfrm.pack(side="left", fill="x", expand=True, padx=(0, 16))
+        self.ramp_label_var = tk.StringVar(value="Ramp: --")
+        ttk.Label(rampfrm, textvariable=self.ramp_label_var, style="Status.TLabel").pack(side="left", padx=(0, 8))
+        self.ramp_progress_var = tk.DoubleVar(value=0.0)
+        self.ramp_progress = ttk.Progressbar(
+            rampfrm,
+            variable=self.ramp_progress_var,
+            maximum=100.0,
+            length=260,
+            mode="determinate",
+        )
+        self.ramp_progress.pack(side="left", fill="x", expand=True)
 
         self.start_btn = ttk.Button(top, text="Start Run", command=self.start_run, style="Accent.TButton")
         self.start_btn.pack(side="right", padx=(5, 0))
@@ -564,6 +596,9 @@ class App(tk.Tk):
             self.live_t.clear()
             self.live_rpm.clear()
             self.live_power.clear()
+            self.live_duty.clear()
+            self._set_status_state("warning")
+            self._set_ramp_progress(None)
 
             self.rpm_line.set_data([], [])
             self.power_line.set_data([], [])
@@ -652,6 +687,7 @@ class App(tk.Tk):
 
                 if msg_type == "status":
                     self.status_var.set(payload)
+                    self._set_status_state_from_text(payload)
                     self.text.insert("end", f"[STATUS] {payload}\n")
                     self.text.see("end")
 
@@ -664,20 +700,27 @@ class App(tk.Tk):
                     t = payload.get("t")
                     rpm = payload.get("rpm")
                     power = payload.get("power")
+                    duty = payload.get("duty")
 
                     if t is not None:
                         self.live_t.append(float(t))
                         self.live_rpm.append(float(rpm) if rpm is not None else float("nan"))
                         self.live_power.append(float(power) if power is not None else float("nan"))
+                        self.live_duty.append(float(duty) if duty is not None else float("nan"))
+                        self._update_ramp_progress(rpm, duty)
 
                 elif msg_type == "done":
                     self.status_var.set("Idle.")
+                    self._set_status_state("idle")
+                    self._set_ramp_progress(None)
                     self.text.insert("end", f"\n=== RUN COMPLETE ===\n{payload}\n")
                     self.text.see("end")
                     self._reset_buttons()
 
                 elif msg_type == "error":
                     self.status_var.set("Error.")
+                    self._set_status_state("error")
+                    self._set_ramp_progress(None)
                     self.text.insert("end", f"\n[ERROR] {payload}\n")
                     self.text.see("end")
                     messagebox.showerror("Run Error", payload)
@@ -686,6 +729,75 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         self.after(50, self._poll_queue)
+
+    def _set_status_state(self, state: str):
+        color = {
+            "idle": self.colors["idle"],
+            "error": self.colors["error"],
+            "warning": self.colors["warning"],
+            "running": self.colors["running"],
+            "processing": self.colors["processing"],
+        }.get(state, self.colors["idle"])
+        self.status_dot.itemconfigure(self.status_dot_id, fill=color)
+
+    def _set_status_state_from_text(self, text: str):
+        s = (text or "").lower()
+        if "error" in s:
+            self._set_status_state("error")
+        elif any(word in s for word in ("post-processing", "extracting", "computing", "saving", "spectrogram")):
+            self._set_status_state("processing")
+        elif any(word in s for word in ("recording", "event")):
+            self._set_status_state("running")
+        elif any(word in s for word in ("preparing", "connecting", "starting", "stopping", "stop requested")):
+            self._set_status_state("warning")
+        elif "idle" in s or "done" in s:
+            self._set_status_state("idle")
+        else:
+            self._set_status_state("warning")
+
+    def _set_ramp_progress(self, pct: float | None, label: str = "Ramp"):
+        if pct is None:
+            self.ramp_progress_var.set(0.0)
+            self.ramp_label_var.set(f"{label}: --")
+            return
+        pct = max(0.0, min(100.0, float(pct)))
+        self.ramp_progress_var.set(pct)
+        self.ramp_label_var.set(f"{label}: {pct:4.0f}%")
+
+    def _update_ramp_progress(self, rpm, duty):
+        if not bool(self.vesc_enabled_var.get()):
+            self._set_ramp_progress(None)
+            return
+
+        mode = (self.vesc_mode_var.get() or "disabled").lower()
+        try:
+            target = abs(float(self.vesc_setpoint_var.get()))
+        except Exception:
+            target = 0.0
+
+        if target <= 1e-9 or mode == "disabled":
+            self._set_ramp_progress(None)
+            return
+
+        if mode == "duty":
+            try:
+                value = abs(float(duty))
+            except Exception:
+                self._set_ramp_progress(None)
+                return
+            self._set_ramp_progress(100.0 * value / target, "Duty ramp")
+            return
+
+        if mode == "rpm":
+            try:
+                value = abs(float(rpm))
+            except Exception:
+                self._set_ramp_progress(None)
+                return
+            self._set_ramp_progress(100.0 * value / target, "RPM ramp")
+            return
+
+        self._set_ramp_progress(None, "Ramp")
 
     def _reset_buttons(self):
         self.start_btn.configure(state="normal")
